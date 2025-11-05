@@ -1,8 +1,8 @@
 #include <iostream>
 
-#include "imgui.h"
-#include "backends/imgui_impl_sdl2.h"
-#include "backends/imgui_impl_opengl3.h"
+#include <imgui.h>
+#include <backends/imgui_impl_sdl2.h>
+#include <backends/imgui_impl_opengl3.h>
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <emscripten.h>
@@ -10,10 +10,12 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
+#include "Console.h"
 #include "WebSocketClient.h"
 #include "NetlistTree.h"
+#include "Types.h"
 
-std::shared_ptr<WebSocketClient> ws;
+WebSocketClient* ws;
 NetlistTree* netlist;
 bool connected = false;
 
@@ -21,54 +23,65 @@ SDL_Window* window;
 SDL_GLContext gl_context;
 
 void setup_websocket() {
-    ws = std::make_shared<WebSocketClient>("ws://localhost:8081/ws");
-    netlist = new NetlistTree(); //(ws);
+  ws = new WebSocketClient("ws://localhost:8081/ws");
+  netlist = new NetlistTree(ws);
 
-    ws->on_open = [&]() {
-        connected = true;
-        std::cout << "✅ Connected to backend" << std::endl;
-        // Ask backend for root node
-        ws->send(R"({"type":"LoadRoot"})");
-    };
+  ws->on_open([&]() {
+    connected = true;
+    Console::Log("✅ Connected to backend");
+    ws->send(R"({"request":"load_root"})");
+  });
 
-    ws->on_message = [&](const std::string& msg) {
-        auto j = json::parse(msg);
-        std::string resp = j.value("response", "");
-        if (resp == "root_response") {
-            netlist->createRoot(j["root"]);
-        } else if (resp == "instances_response") {
-            //netlist->insert_instances(j["gui_id"], j["children"]);
-        } else if (resp == "terms_response") {
-            //netlist->insert_terms(j["gui_id"], j["children"]);
-        } else if (resp == "instance_response") {
-            //netlist->expand_instance(j["gui_id"], j["instance"]);
-        } else if (resp == "error") {
-            std::cerr << "Backend error: " << j["message"] << std::endl;
-        }
-    };
+  ws->on_message([&](const std::string& msg) {
+    auto j = json::parse(msg);
+    std::string resp = j.value("response", "");
+    if (resp == "root_response") {
+      InstanceResponseJson data = j["root"].get<InstanceResponseJson>();
+      netlist->createRoot(data.name.value_or("Unnamed Root"), data.design_ref);
+    } else if (resp == "instances_response") {
+      //netlist->insertInstances(j["gui_id"], j["children"]);
+    } else if (resp == "terms_response") {
+      //netlist->insert_terms(j["gui_id"], j["children"]);
+    } else if (resp == "instance_response") {
+      //netlist->expand_instance(j["gui_id"], j["instance"]);
+    } else if (resp == "error") {
+      std::cerr << "Backend error: " << j["message"] << std::endl;
+    }
+  });
 
-    ws->on_error = [](const std::string& err) {
-        std::cerr << "⚠️ " << err << std::endl;
-    };
+  ws->on_error([&](const std::string& err) {
+    Console::Error("⚠️ WebSocket error: " + err);
+  });
 
-    ws->on_close = []() {
-        std::cerr << "❌ Connection closed" << std::endl;
-    };
+  ws->on_close([&]() {
+    Console::Error("❌ Connection closed");
+  });
 }
 
 void main_loop() {
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
-      ImGui_ImplSDL2_ProcessEvent(&event);
-      if (event.type == SDL_QUIT) {
-        //done = true;
-      }
+    ImGui_ImplSDL2_ProcessEvent(&event);
+    if (event.type == SDL_QUIT) {
+      //done = true;
+    }
   }
 
   ImGuiIO& io = ImGui::GetIO();
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplSDL2_NewFrame();
   ImGui::NewFrame();
+
+  // ==== Top Menu Bar ====
+  if (ImGui::BeginMainMenuBar()) {
+    if (ImGui::BeginMenu("File")) {
+      if (ImGui::MenuItem("About")) {
+        std::cout << "About clicked" << std::endl;
+      }
+      ImGui::EndMenu();
+    }
+    ImGui::EndMainMenuBar();
+  }
 
     // === UI ===
   ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar |
@@ -82,25 +95,23 @@ void main_loop() {
   ImGui::SetNextWindowSize(io.DisplaySize);
   ImGui::Begin("MainWindow", nullptr, window_flags);
   {
-    // Left tree panel
-    ImGui::BeginChild("LeftPanel", ImVec2(250, 0), true);
+    // --- Left Side Panel ---
+    ImGui::BeginChild("LeftPanel", ImVec2(300, 0), true);
     {
-      ImGui::Text("Tree View");
+      ImGui::Text("Netlist Hierarchy");
       ImGui::Separator();
 
-      if (ImGui::TreeNode("Design")) {
-        if (ImGui::TreeNode("Instances")) {
-          ImGui::BulletText("U1 : opamp");
-          ImGui::BulletText("U2 : resistor");
-          ImGui::TreePop();
+      ImGui::BeginChild("TreeScroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+      {
+        Console::Log("Rendering NetlistTree: " + std::to_string(connected));
+        // Here you’d eventually render your NetlistTree
+        if (netlist && connected) {
+          netlist->render();
+        } else {
+          ImGui::Text("Root node not loaded yet...");
         }
-        if (ImGui::TreeNode("Nets")) {
-          ImGui::BulletText("net_vcc");
-          ImGui::BulletText("net_gnd");
-          ImGui::TreePop();
-        }
-        ImGui::TreePop();
       }
+      ImGui::EndChild();
     }
     ImGui::EndChild();
 

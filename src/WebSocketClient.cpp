@@ -4,10 +4,17 @@
 #include <emscripten/websocket.h>
 #include <emscripten/val.h>
 
+#include "Console.h"
+
 EM_BOOL on_open(int eventType, const EmscriptenWebSocketOpenEvent*, void* userData) {
   auto* client = reinterpret_cast<WebSocketClient*>(userData);
-  std::cout << "✅ WebSocket connected!\n";
-  if (client->open_cb) client->open_cb();
+  Console::Log("✅ WebSocket connected!");
+  if (client->open_cb) {
+    Console::Log("✅ WebSocket Opening callback called!");
+    client->open_cb();
+  } else {
+    Console::Log("✅ WebSocket Opening callback not set.");
+  }
   return EM_TRUE;
 }
 
@@ -15,7 +22,7 @@ EM_BOOL on_message(int eventType, const EmscriptenWebSocketMessageEvent* e, void
   auto* client = reinterpret_cast<WebSocketClient*>(userData);
   if (e->isText && e->data) {
     std::string msg(reinterpret_cast<const char*>(e->data), e->numBytes);
-    std::cout << "💬 Received: " << msg << "\n";
+    Console::Log("💬 Received: " + msg);
     if (client->msg_cb) client->msg_cb(msg);
   }
   return EM_TRUE;
@@ -23,21 +30,21 @@ EM_BOOL on_message(int eventType, const EmscriptenWebSocketMessageEvent* e, void
 
 EM_BOOL on_close(int eventType, const EmscriptenWebSocketCloseEvent*, void* userData) {
   auto* client = reinterpret_cast<WebSocketClient*>(userData);
-  std::cout << "❎ WebSocket closed.\n";
+  Console::Log("❎ WebSocket closed.");
   if (client->close_cb) client->close_cb();
   return EM_TRUE;
 }
 
 EM_BOOL on_error(int eventType, const EmscriptenWebSocketErrorEvent*, void* userData) {
   auto* client = reinterpret_cast<WebSocketClient*>(userData);
-  std::cerr << "⚠️ WebSocket error.\n";
+  Console::Error("⚠️ WebSocket error.");
   if (client->err_cb) client->err_cb("WebSocket error");
   return EM_TRUE;
 }
 
 WebSocketClient::WebSocketClient(const std::string& url) {
   if (!emscripten_websocket_is_supported()) {
-    std::cerr << "❌ WebSockets not supported in this browser.\n";
+    Console::Error("WebSockets not supported in this browser.");
     socket = -1;
     return;
   }
@@ -49,7 +56,7 @@ WebSocketClient::WebSocketClient(const std::string& url) {
 
   socket = emscripten_websocket_new(&attr);
   if (socket <= 0) {
-    std::cerr << "❌ Failed to create WebSocket: " << url << "\n";
+    Console::Error("Failed to create WebSocket: " + url);
     return;
   }
 
@@ -59,9 +66,25 @@ WebSocketClient::WebSocketClient(const std::string& url) {
   emscripten_websocket_set_onerror_callback(socket, this, ::on_error);
 }
 
-void WebSocketClient::send(const std::string& msg) {
+void WebSocketClient::send(const std::string& msg) const {
   if (socket > 0) {
     emscripten_websocket_send_utf8_text(socket, msg.c_str());
-    std::cout << "📨 Sent: " << msg << "\n";
+    Console::Log( "Sent: " + msg );
   }
+}
+
+void WebSocketClient::on_open(std::function<void()> callback) {
+  open_cb = std::move(callback);
+}
+
+void WebSocketClient::on_message(std::function<void(const std::string&)> callback) {
+  msg_cb = std::move(callback);
+}
+
+void WebSocketClient::on_close(std::function<void()> callback) {
+  close_cb = std::move(callback);
+}
+
+void WebSocketClient::on_error(std::function<void(const std::string&)> callback) {
+  err_cb = std::move(callback);
 }

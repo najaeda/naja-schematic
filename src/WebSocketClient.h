@@ -5,12 +5,12 @@
 class WebSocketClient {
   public:
     explicit WebSocketClient(const std::string& url);
-    void send(const std::string& msg);
+    void send(const std::string& msg) const;
 
-    std::function<void()> on_open;
-    std::function<void(const std::string&)> on_message;
-    std::function<void()> on_close;
-    std::function<void(const std::string&)> on_error;
+    void on_open(std::function<void()> callback);
+    void on_message(std::function<void(const std::string&)> callback);
+    void on_close(std::function<void()> callback);
+    void on_error(std::function<void(const std::string&)> callback);
 
     int socket  {-1};
   

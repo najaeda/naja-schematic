@@ -37,10 +37,11 @@ include_directories(
 # Your own sources
 # --------------------------------------------
 set(SOURCES
-    src/main.cpp
+    src/Console.cpp
+    src/Types.cpp
     src/NetlistTree.cpp
     src/WebSocketClient.cpp
-    #backend/netlist.cpp
+    src/main.cpp
     ${IMGUI_SOURCES}
 )
 
@@ -52,6 +53,8 @@ add_executable(naja-schematic ${SOURCES})
 
 if(EMSCRIPTEN)
     message(STATUS "Emscripten build detected — enabling SDL2 and WebGL2")
+
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sEXCEPTION_CATCHING_ALLOWED=['main','naja-schematic'] -fexceptions")
 
     set(EM_COMPILE_FLAGS
         "-sUSE_SDL=2"
@@ -68,6 +71,9 @@ if(EMSCRIPTEN)
         "-sWASM=1"
         "--shell-file=${CMAKE_SOURCE_DIR}/src/shell_minimal.html"
         "-lwebsocket.js"
+        "-lembind"
+        "-sEXCEPTION_CATCHING_ALLOWED=['main','naja-schematic']"
+        "-fexceptions"
     )
 
     # Apply to both compile and link steps
