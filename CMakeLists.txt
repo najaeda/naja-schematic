@@ -38,6 +38,7 @@ include_directories(
 # --------------------------------------------
 set(SOURCES
     src/main.cpp
+    src/NetlistTree.cpp
     src/WebSocketClient.cpp
     #backend/netlist.cpp
     ${IMGUI_SOURCES}
@@ -66,6 +67,7 @@ if(EMSCRIPTEN)
         "-sEXIT_RUNTIME=0"
         "-sWASM=1"
         "--shell-file=${CMAKE_SOURCE_DIR}/src/shell_minimal.html"
+        "-lwebsocket.js"
     )
 
     # Apply to both compile and link steps

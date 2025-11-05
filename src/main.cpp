@@ -11,8 +11,10 @@
 using json = nlohmann::json;
 
 #include "WebSocketClient.h"
+#include "NetlistTree.h"
 
 std::shared_ptr<WebSocketClient> ws;
+NetlistTree* netlist;
 bool connected = false;
 
 SDL_Window* window;
@@ -20,7 +22,7 @@ SDL_GLContext gl_context;
 
 void setup_websocket() {
     ws = std::make_shared<WebSocketClient>("ws://localhost:8081/ws");
-    //netlist = std::make_shared<NetlistTree>(ws);
+    netlist = new NetlistTree(); //(ws);
 
     ws->on_open = [&]() {
         connected = true;
@@ -33,7 +35,7 @@ void setup_websocket() {
         auto j = json::parse(msg);
         std::string resp = j.value("response", "");
         if (resp == "root_response") {
-            //netlist->create_instance_node(j["root"]);
+            netlist->createRoot(j["root"]);
         } else if (resp == "instances_response") {
             //netlist->insert_instances(j["gui_id"], j["children"]);
         } else if (resp == "terms_response") {
@@ -55,96 +57,98 @@ void setup_websocket() {
 }
 
 void main_loop() {
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-        ImGui_ImplSDL2_ProcessEvent(&event);
-        if (event.type == SDL_QUIT) {
-          //done = true;
-        }
-    }
+  SDL_Event event;
+  while (SDL_PollEvent(&event)) {
+      ImGui_ImplSDL2_ProcessEvent(&event);
+      if (event.type == SDL_QUIT) {
+        //done = true;
+      }
+  }
 
-    ImGuiIO& io = ImGui::GetIO();
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplSDL2_NewFrame();
-    ImGui::NewFrame();
+  ImGuiIO& io = ImGui::GetIO();
+  ImGui_ImplOpenGL3_NewFrame();
+  ImGui_ImplSDL2_NewFrame();
+  ImGui::NewFrame();
 
     // === UI ===
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar |
-                                    ImGuiWindowFlags_NoResize |
-                                    ImGuiWindowFlags_NoMove |
-                                    ImGuiWindowFlags_NoCollapse |
-                                    ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                    ImGuiWindowFlags_NoNavFocus;
+  ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar |
+                                  ImGuiWindowFlags_NoResize |
+                                  ImGuiWindowFlags_NoMove |
+                                  ImGuiWindowFlags_NoCollapse |
+                                  ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                  ImGuiWindowFlags_NoNavFocus;
 
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(io.DisplaySize);
-    ImGui::Begin("MainWindow", nullptr, window_flags);
+  ImGui::SetNextWindowPos(ImVec2(0, 0));
+  ImGui::SetNextWindowSize(io.DisplaySize);
+  ImGui::Begin("MainWindow", nullptr, window_flags);
+  {
+    // Left tree panel
+    ImGui::BeginChild("LeftPanel", ImVec2(250, 0), true);
     {
-        // Left tree panel
-        ImGui::BeginChild("LeftPanel", ImVec2(250, 0), true);
-        {
-            ImGui::Text("Tree View");
-            ImGui::Separator();
+      ImGui::Text("Tree View");
+      ImGui::Separator();
 
-            if (ImGui::TreeNode("Design")) {
-                if (ImGui::TreeNode("Instances")) {
-                    ImGui::BulletText("U1 : opamp");
-                    ImGui::BulletText("U2 : resistor");
-                    ImGui::TreePop();
-                }
-                if (ImGui::TreeNode("Nets")) {
-                    ImGui::BulletText("net_vcc");
-                    ImGui::BulletText("net_gnd");
-                    ImGui::TreePop();
-                }
-                ImGui::TreePop();
-            }
+      if (ImGui::TreeNode("Design")) {
+        if (ImGui::TreeNode("Instances")) {
+          ImGui::BulletText("U1 : opamp");
+          ImGui::BulletText("U2 : resistor");
+          ImGui::TreePop();
         }
-        ImGui::EndChild();
-
-        ImGui::SameLine();
-        ImGui::BeginChild("MainView", ImVec2(0, 0), true);
-        {
-            ImGui::Text("Main schematic area");
-            //if (ImGui::Button("Quit")) done = true;
+        if (ImGui::TreeNode("Nets")) {
+          ImGui::BulletText("net_vcc");
+          ImGui::BulletText("net_gnd");
+          ImGui::TreePop();
         }
-        ImGui::EndChild();
+        ImGui::TreePop();
+      }
     }
-    ImGui::End();
+    ImGui::EndChild();
 
-    // === RENDER ===
-    ImGui::Render();
-    glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
-    glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    SDL_GL_SwapWindow(window);
+    ImGui::SameLine();
+    ImGui::BeginChild("MainView", ImVec2(0, 0), true);
+    {
+      ImGui::Text("Main schematic area");
+      //if (ImGui::Button("Quit")) done = true;
+    }
+    ImGui::EndChild();
+  }
+  ImGui::End();
+
+  // === RENDER ===
+  ImGui::Render();
+  glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
+  glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+  SDL_GL_SwapWindow(window);
 }
 
 int main() {
-    SDL_Init(SDL_INIT_VIDEO);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+  SDL_Init(SDL_INIT_VIDEO);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 
-    window = SDL_CreateWindow("ImGui WASM",
-                              SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                              1280, 720, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
-    gl_context = SDL_GL_CreateContext(window);
-    SDL_GL_MakeCurrent(window, gl_context);
+  window = SDL_CreateWindow("ImGui WASM",
+                            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                            1280, 720, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+  gl_context = SDL_GL_CreateContext(window);
+  SDL_GL_MakeCurrent(window, gl_context);
 
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
-    ImGui_ImplOpenGL3_Init("#version 300 es");
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
+  ImGui_ImplOpenGL3_Init("#version 300 es");
 
-    emscripten_set_main_loop(main_loop, 0, true);
+  setup_websocket();
 
-    // cleanup never reached under emscripten, but left for completeness
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplSDL2_Shutdown();
-    ImGui::DestroyContext();
-    SDL_GL_DeleteContext(gl_context);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
-    return 0;
+  emscripten_set_main_loop(main_loop, 0, true);
+
+  // cleanup never reached under emscripten, but left for completeness
+  ImGui_ImplOpenGL3_Shutdown();
+  ImGui_ImplSDL2_Shutdown();
+  ImGui::DestroyContext();
+  SDL_GL_DeleteContext(gl_context);
+  SDL_DestroyWindow(window);
+  SDL_Quit();
+  return 0;
 }
