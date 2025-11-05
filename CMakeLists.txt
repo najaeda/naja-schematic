@@ -30,6 +30,7 @@ include_directories(
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${CMAKE_SOURCE_DIR}/backend
+    ${CMAKE_SOURCE_DIR}/thirdparty
 )
 
 # --------------------------------------------
@@ -37,6 +38,7 @@ include_directories(
 # --------------------------------------------
 set(SOURCES
     src/main.cpp
+    src/WebSocketClient.cpp
     #backend/netlist.cpp
     ${IMGUI_SOURCES}
 )

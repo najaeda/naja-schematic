@@ -1,3 +1,5 @@
+#include <iostream>
+
 #include "imgui.h"
 #include "backends/imgui_impl_sdl2.h"
 #include "backends/imgui_impl_opengl3.h"
@@ -5,16 +7,60 @@
 #include <SDL_opengl.h>
 #include <emscripten.h>
 
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
+
+#include "WebSocketClient.h"
+
+std::shared_ptr<WebSocketClient> ws;
+bool connected = false;
+
 SDL_Window* window;
 SDL_GLContext gl_context;
-bool done = false;
+
+void setup_websocket() {
+    ws = std::make_shared<WebSocketClient>("ws://localhost:8081/ws");
+    //netlist = std::make_shared<NetlistTree>(ws);
+
+    ws->on_open = [&]() {
+        connected = true;
+        std::cout << "✅ Connected to backend" << std::endl;
+        // Ask backend for root node
+        ws->send(R"({"type":"LoadRoot"})");
+    };
+
+    ws->on_message = [&](const std::string& msg) {
+        auto j = json::parse(msg);
+        std::string resp = j.value("response", "");
+        if (resp == "root_response") {
+            //netlist->create_instance_node(j["root"]);
+        } else if (resp == "instances_response") {
+            //netlist->insert_instances(j["gui_id"], j["children"]);
+        } else if (resp == "terms_response") {
+            //netlist->insert_terms(j["gui_id"], j["children"]);
+        } else if (resp == "instance_response") {
+            //netlist->expand_instance(j["gui_id"], j["instance"]);
+        } else if (resp == "error") {
+            std::cerr << "Backend error: " << j["message"] << std::endl;
+        }
+    };
+
+    ws->on_error = [](const std::string& err) {
+        std::cerr << "⚠️ " << err << std::endl;
+    };
+
+    ws->on_close = []() {
+        std::cerr << "❌ Connection closed" << std::endl;
+    };
+}
 
 void main_loop() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         ImGui_ImplSDL2_ProcessEvent(&event);
-        if (event.type == SDL_QUIT)
-            done = true;
+        if (event.type == SDL_QUIT) {
+          //done = true;
+        }
     }
 
     ImGuiIO& io = ImGui::GetIO();
@@ -60,7 +106,7 @@ void main_loop() {
         ImGui::BeginChild("MainView", ImVec2(0, 0), true);
         {
             ImGui::Text("Main schematic area");
-            if (ImGui::Button("Quit")) done = true;
+            //if (ImGui::Button("Quit")) done = true;
         }
         ImGui::EndChild();
     }
