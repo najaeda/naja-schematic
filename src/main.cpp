@@ -37,13 +37,21 @@ void setup_websocket() {
     std::string resp = j.value("response", "");
     if (resp == "root_response") {
       InstanceResponseJson data = j["root"].get<InstanceResponseJson>();
-      netlist->createRoot(data.name.value_or("Unnamed Root"), data.design_ref);
+      netlist->createRoot(
+        data.name.value_or(std::string()),
+        data.design_ref,
+        data.has_primitives,
+        data.has_instances,
+        data.has_terms
+      );
     } else if (resp == "instances_response") {
+      //InstanceResponseJson data = j["instance"].get<InstanceResponseJson>();
+      //auto parent = netlist->getRoot()->getNodeByGUID(data.gui_id);
       //netlist->insertInstances(j["gui_id"], j["children"]);
     } else if (resp == "terms_response") {
-      //netlist->insert_terms(j["gui_id"], j["children"]);
+      //netlist->insertTerms(j["gui_id"], j["children"]);
     } else if (resp == "instance_response") {
-      //netlist->expand_instance(j["gui_id"], j["instance"]);
+      //netlist->expandInstance(j["gui_id"], j["instance"]);
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
     }

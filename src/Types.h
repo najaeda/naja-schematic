@@ -14,7 +14,7 @@ struct DesignRef {
 
 struct InstanceResponseJson {
     std::optional<std::string> name;
-    int child_id;
+    unsigned child_id;
     std::optional<std::string> model_name;
     DesignRef design_ref;
     bool has_primitives;
