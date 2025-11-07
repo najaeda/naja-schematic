@@ -72,6 +72,7 @@ if(EMSCRIPTEN)
         "--shell-file=${CMAKE_SOURCE_DIR}/src/shell_minimal.html"
         "-lwebsocket.js"
         "-lembind"
+        "-sEXCEPTION_STACK_TRACES=1"
         "-sEXCEPTION_CATCHING_ALLOWED=['main','naja-schematic']"
         "-fexceptions"
     )

@@ -22,7 +22,7 @@ bool connected = false;
 SDL_Window* window;
 SDL_GLContext gl_context;
 
-void setup_websocket() {
+void setupWebsocket() {
   ws = new WebSocketClient("ws://localhost:8081/ws");
   netlist = new NetlistTree(ws);
 
@@ -37,21 +37,46 @@ void setup_websocket() {
     std::string resp = j.value("response", "");
     if (resp == "root_response") {
       InstanceResponseJson data = j["root"].get<InstanceResponseJson>();
-      netlist->createRoot(
-        data.name.value_or(std::string()),
+      netlist->createRootNode(
+        data.name,
         data.design_ref,
+        data.has_terms,
         data.has_primitives,
-        data.has_instances,
-        data.has_terms
+        data.has_instances
       );
-    } else if (resp == "instances_response") {
-      //InstanceResponseJson data = j["instance"].get<InstanceResponseJson>();
-      //auto parent = netlist->getRoot()->getNodeByGUID(data.gui_id);
-      //netlist->insertInstances(j["gui_id"], j["children"]);
+    } else if (resp == "instances_response" or resp == "primitives_response") {
+      InstancesResponseJson data = j.get<InstancesResponseJson>();
+      auto parent = netlist->getNode(data.gui_id);
+      if (!parent) {
+        Console::Error("Cannot find node: " + std::to_string(data.gui_id));
+      }
+      if (parent->hasChildren()) {
+        Console::Error("internal error");
+      }
+      parent->createChildren();
+      for (auto instance: data.children) {
+        parent->createInstanceNode(
+          instance.name,
+          instance.design_ref,
+          instance.has_terms,
+          instance.has_primitives,
+          instance.has_instances
+        );
+      }
     } else if (resp == "terms_response") {
-      //netlist->insertTerms(j["gui_id"], j["children"]);
-    } else if (resp == "instance_response") {
-      //netlist->expandInstance(j["gui_id"], j["instance"]);
+      TermsResponseJson data = j.get<TermsResponseJson>();
+      auto parent = netlist->getNode(data.gui_id);
+      if (!parent) {
+        Console::Error("Cannot find node: " + std::to_string(data.gui_id));
+      }
+      if (parent->hasChildren()) {
+        Console::Error("internal error");
+      }
+      parent->createChildren();
+      for (auto term: data.children) {
+        auto direction = Direction(term.direction);
+        parent->createTermNode(term.name, direction, term.msb, term.lsb);
+      }
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
     }
@@ -66,7 +91,7 @@ void setup_websocket() {
   });
 }
 
-void main_loop() {
+void mainLoopInternal() {
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
     ImGui_ImplSDL2_ProcessEvent(&event);
@@ -111,7 +136,6 @@ void main_loop() {
 
       ImGui::BeginChild("TreeScroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
       {
-        Console::Log("Rendering NetlistTree: " + std::to_string(connected));
         // Here you’d eventually render your NetlistTree
         if (netlist && connected) {
           netlist->render();
@@ -142,6 +166,14 @@ void main_loop() {
   SDL_GL_SwapWindow(window);
 }
 
+void mainLoop() {
+  try {
+    mainLoopInternal();
+  } catch (const std::exception& e) {
+    Console::Error("Exception in main loop: " + std::string(e.what()));
+  }
+}
+
 int main() {
   SDL_Init(SDL_INIT_VIDEO);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -158,9 +190,13 @@ int main() {
   ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
   ImGui_ImplOpenGL3_Init("#version 300 es");
 
-  setup_websocket();
+  try {
+    setupWebsocket();
+  } catch (const std::exception& e) {
+    Console::Error("Error setting up WebSocket: " + std::string(e.what()));
+  }
 
-  emscripten_set_main_loop(main_loop, 0, true);
+  emscripten_set_main_loop(mainLoop, 0, true);
 
   // cleanup never reached under emscripten, but left for completeness
   ImGui_ImplOpenGL3_Shutdown();

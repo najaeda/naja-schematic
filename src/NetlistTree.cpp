@@ -5,14 +5,13 @@
 #include "Console.h"
 #include "WebSocketClient.h"
 
-void NetlistTree::createRoot(
+void NetlistTree::createRootNode(
   const std::string& name,
   const DesignRef& design_ref,
   bool hasTerms,
   bool hasPrimitives,
   bool hasInstances) {
-  root_ = new NetlistTreeInstanceNode(this, name, design_ref);
-  root_->createChildrenPlaceholders(hasTerms, hasPrimitives, hasInstances);
+  root_ = new NetlistTreeInstanceNode(this, name, design_ref, hasTerms, hasPrimitives, hasInstances);
 }
 
 void NetlistTree::render() {
@@ -24,19 +23,16 @@ void NetlistTree::render() {
 }
 
 void NetlistTree::insertNodeInMap(NetlistTreeNode* node) {
-    nodes_[nextNodeID_++] = node;
+  node->guiID_ = nextGUIID_;
+  nodes_[nextGUIID_++] = node;
 }
 
-void NetlistTreeInstanceNode::sendLoadRequest() const {
-    auto request = R"({"request":"load_instances","design_ref":{"db_id":)" +
-        std::to_string(designRef_.db_id) +
-        R"(,"library_id":)" +
-        std::to_string(designRef_.library_id) +
-        R"(,"design_id":)" +
-        std::to_string(designRef_.design_id) +
-        R"(}})";
-    getTree()->getWebSocketClient()->send(request);
+NetlistTreeNode* NetlistTree::getNode(unsigned guiID) const {
+  auto it = nodes_.find(guiID);
+  return (it != nodes_.end()) ? it->second : nullptr;
 }
+
+void NetlistTreeInstanceNode::sendLoadRequest() const {}
 
 std::string NetlistTreeInstanceNode::getLabel() const {
     std::string label;
@@ -53,7 +49,25 @@ std::string NetlistTreeInstanceNode::getLabel() const {
 }
 
 void NetlistTreeNode::render() {
-  if (ImGui::TreeNodeEx(getLabel().c_str())) {
+  expand();
+  auto flags = ImGuiTreeNodeFlags_None;
+  if (children_ != nullptr and children_->empty()) {
+    flags = ImGuiTreeNodeFlags_Leaf;
+  }
+  if (getColor() != 0) {
+    ImGui::PushStyleColor(ImGuiCol_Text, getColor());
+  }
+  auto isOpen = ImGui::TreeNodeEx(getLabel().c_str(), flags);
+  if (getColor() != 0) {
+    ImGui::PopStyleColor();
+  }
+  if (isBitTerm()) {
+    if (ImGui::BeginPopupContextItem()) {
+      ImGui::Text("Show Equipotential");
+      ImGui::EndPopup();
+    }
+  }
+  if (isOpen) {
     if (children_ != nullptr) {
       for (auto child : *children_) {
         child->render();
@@ -75,16 +89,30 @@ void NetlistTreeNode::render() {
 NetlistTreeInstanceNode::NetlistTreeInstanceNode(
     NetlistTree* tree,
     const std::string& name,
-    const DesignRef& designRef):
+    const DesignRef& designRef,
+    bool hasTerms,
+    bool hasPrimitives,
+    bool hasInstances):
     NetlistTreeNode(tree),
-    isRoot_(true), name_(name), designRef_(designRef) {
-  tree->insertNodeInMap(this);
-}
+    isRoot_(true), name_(name), designRef_(designRef),
+    hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances)
+{}
+
+NetlistTreeInstanceNode::NetlistTreeInstanceNode(
+    NetlistTreeNode* parent,
+    const std::string& name,
+    const DesignRef& designRef,
+    bool hasTerms,
+    bool hasPrimitives,
+    bool hasInstances):
+    NetlistTreeNode(parent),
+    isRoot_(false), name_(name), designRef_(designRef),
+    hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances)
+{}
 
 NetlistTreeGroupNode::NetlistTreeGroupNode(
   NetlistTreeNode* parent,
   Type type): NetlistTreeNode(parent), type_(type) {
-  getTree()->insertNodeInMap(this);
 }
 
 std::string NetlistTreeGroupNode::getLabel() const {
@@ -100,7 +128,7 @@ std::string NetlistTreeGroupNode::getLabel() const {
   }
 }
 
-DesignRef NetlistTreeGroupNode::getDesignRef() const {
+DesignRef NetlistTreeNode::getDesignRef() const {
   return getParent()->getDesignRef();
 }
 
@@ -109,18 +137,19 @@ void NetlistTreeGroupNode::sendLoadRequest() const {
   std::string request;
   switch (type_) {
     case Type::Terms:
-      request = R"({"request":"load_terms", )";
+      request = R"({"request":"load_terms",)";
       break;
     case Type::Primitives:
-      request = R"({"request":"load_primitives", )";
+      request = R"({"request":"load_primitives",)";
       break;
     case Type::Instances:
-      request = R"({"request":"load_instances", )";
+      request = R"({"request":"load_instances",)";
       break;
     default:
       Console::Error("Unknown group type for load request");
       return;
   }
+  request += R"("gui_id":)" + std::to_string(guiID_) + ",";
   auto designRef = getDesignRef();
   request += R"("design_ref":{"db_id":)" +
         std::to_string(designRef.db_id) +
@@ -133,23 +162,94 @@ void NetlistTreeGroupNode::sendLoadRequest() const {
   getTree()->getWebSocketClient()->send(request);
 }
 
-void NetlistTreeNode::createChildrenPlaceholders(
-    bool hasTerms,
-    bool hasPrimitives,
-    bool hasInstances) {
-  if (hasTerms or hasPrimitives or hasInstances) {
+NetlistTreeTermNode::NetlistTreeTermNode(
+  NetlistTreeNode* parent,
+  const std::string& name,
+  Direction direction,
+  std::optional<int> msb,
+  std::optional<int> lsb):
+  NetlistTreeNode(parent), name_(name), direction_(direction), msb_(msb), lsb_(lsb) {
+  if (not msb_.has_value() or not lsb_.has_value()) { //scalar
     children_ = new Children();
   }
-  if (hasTerms) {
-    Console::Log("Creating Terms placeholder");
+}
+
+void NetlistTreeTermNode::expand() {
+  if (children_ == nullptr) {
+    children_ = new Children();
+    if (msb_.has_value() and lsb_.has_value()) {
+
+    }
+  }
+}
+
+std::string NetlistTreeTermNode::getLabel() const {
+  if (not name_.empty()) {
+    return name_;
+  } else {
+    return "<unnamed>";
+  }
+  return name_;
+}
+
+ImU32 NetlistTreeTermNode::getColor() const {
+  switch (direction_) {
+    case Direction::Input:
+      return IM_COL32(0, 255, 0, 255); // Green
+    case Direction::Output:
+      return IM_COL32(255, 0, 0, 255); // Red
+    case Direction::Inout:
+      return IM_COL32(255, 255, 0, 255); // Yellow
+    default:
+      return 0;
+  }
+}
+
+void NetlistTreeNode::createChildren() {
+  children_ = new Children();
+}
+
+void NetlistTreeInstanceNode::expand() {
+  if (children_ != nullptr) {
+    return;
+  }
+  children_ = new Children();
+  if (hasTerms_) {
     children_->push_back(new NetlistTreeGroupNode(this, NetlistTreeGroupNode::Type::Terms));
   }
-  if (hasPrimitives) {
+  if (hasPrimitives_) {
     children_->push_back(new NetlistTreeGroupNode(this, NetlistTreeGroupNode::Type::Primitives));
   }
-  if (hasInstances) {
+  if (hasInstances_) {
     children_->push_back(new NetlistTreeGroupNode(this, NetlistTreeGroupNode::Type::Instances));
   }
+}
+
+void NetlistTreeNode::createTermNode(
+  const std::string& name,
+  Direction direction,
+  std::optional<int> msb,
+  std::optional<int> lsb) {
+  //this should be a group node of type Terms
+  children_->push_back(new NetlistTreeTermNode(this, name, direction, msb, lsb));
+}
+
+void NetlistTreeNode::createInstanceNode(
+  const std::string& name,
+  const DesignRef& design_ref,
+  bool hasTerms,
+  bool hasPrimitives,
+  bool hasInstances) {
+  auto node = new NetlistTreeInstanceNode(this, name, design_ref, hasTerms, hasPrimitives, hasInstances);
+  children_->push_back(node);
+}
+
+NetlistTreeNode::NetlistTreeNode(NetlistTree* tree): parent_(tree) {
+  tree->insertNodeInMap(this);
+}
+
+NetlistTreeNode::NetlistTreeNode(NetlistTreeNode* parent): parent_(parent) {
+  getTree()->insertNodeInMap(this);
 }
 
 NetlistTreeNode* NetlistTreeNode::getParent() const {

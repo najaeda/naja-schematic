@@ -113,41 +113,23 @@ async def handle_connection(websocket):
                         "response": response_type,
                         "found": True,
                         "gui_id": gui_id,
-                        "design_ref": {
-                            "db_id": design.getDB().getID(),
-                            "library_id": design.getLibrary().getID(),
-                            "design_id": design.getID(),
-                        },
                         "children": children
                     }))
-
                 elif req_type == "load_terms":
                     terms = [
                         { "name": term.getName(),
                           "child_id": term.getID(),
-                          "gui_id": gui_id,
-                          "direction": "Input" if term.getDirection() == naja.SNLTerm.Direction.Input
-                                        else "Output" if term.getDirection() == naja.SNLTerm.Direction.Output
-                                        else "Inout",
-                          "is_bus": isinstance(term, naja.SNLBusTerm),
+                          "direction": 0 if term.getDirection() == naja.SNLTerm.Direction.Input
+                                        else 1 if term.getDirection() == naja.SNLTerm.Direction.Output
+                                        else 2,
                           "msb": term.getMSB() if isinstance(term, naja.SNLBusTerm) else None,
                           "lsb": term.getLSB() if isinstance(term, naja.SNLBusTerm) else None,
-                          "design_ref": {
-                              "db_id": design.getDB().getID(),
-                              "library_id": design.getLibrary().getID(),
-                              "design_id": design.getID(),
-                          }
                         } for term in design.getTerms()
                     ]
                     await websocket.send(json.dumps({
                         "response": "terms_response",
                         "found": True,
                         "gui_id": gui_id,
-                        "design_ref": {
-                            "db_id": design.getDB().getID(),
-                            "library_id": design.getLibrary().getID(),
-                            "design_id": design.getID(),
-                        },
                         "children": terms
                     }))
                 
