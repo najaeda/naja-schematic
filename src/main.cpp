@@ -57,6 +57,7 @@ void setupWebsocket() {
       for (auto instance: data.children) {
         parent->createInstanceNode(
           instance.name,
+          instance.child_id,
           instance.design_ref,
           instance.has_terms,
           instance.has_primitives,
@@ -75,7 +76,7 @@ void setupWebsocket() {
       parent->createChildren();
       for (auto term: data.children) {
         auto direction = Direction(term.direction);
-        parent->createTermNode(term.name, direction, term.msb, term.lsb);
+        parent->createTermNode(term.name, term.child_id, direction, term.msb, term.lsb);
       }
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;

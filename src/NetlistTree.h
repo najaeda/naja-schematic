@@ -6,7 +6,43 @@
 
 #include "Types.h"
 
-class NetlistTree;
+class NetlistTreeNode;
+class WebSocketClient;
+
+
+class NetlistTree {
+  public:
+    struct TermID {
+      unsigned id;
+      bool isBusBit;
+      int busBit;
+    };
+    using Path = std::vector<unsigned>;
+    using NodesMap = std::map<unsigned, NetlistTreeNode*>;
+    NetlistTree(const WebSocketClient* ws): ws_(ws) {}
+    NetlistTree(const NetlistTree&) = delete;
+    NetlistTree& operator=(const NetlistTree&) = delete;
+
+    void createRootNode(
+      const std::string& name,
+      const DesignRef& design_ref,
+      bool hasTerms,
+      bool hasPrimitives,
+      bool hasInstances);
+
+    NetlistTreeNode* getNode(unsigned id) const;
+    NetlistTreeNode* getRoot() const { return root_; }
+    void sendLoadEquipotential(const Path& path, const TermID& termID) const;
+    const WebSocketClient* getWebSocketClient() const { return ws_; }
+
+    void render();
+    void insertNodeInMap(NetlistTreeNode* node);
+  private:
+    const WebSocketClient*  ws_         {nullptr};
+    NetlistTreeNode*        root_       {nullptr};
+    unsigned                nextGUIID_ {0};
+    NodesMap                nodes_;
+};
 
 class NetlistTreeNode {
   friend class NetlistTree;
@@ -17,11 +53,13 @@ class NetlistTreeNode {
     NetlistTree* getTree() const;
     void createTermNode(
       const std::string& name,
+      unsigned childID,
       Direction direction,
       std::optional<int> msb,
       std::optional<int> lsb);
     void createInstanceNode(
       const std::string& name,
+      unsigned charID,
       const DesignRef& design_ref,
       bool hasTerms,
       bool hasPrimitives,
@@ -32,11 +70,22 @@ class NetlistTreeNode {
     virtual void expand() {}
     virtual std::string getLabel() const = 0;
     virtual bool isRoot() const { return false; }
-    virtual void sendLoadRequest() const = 0;
+    virtual void sendLoadRequest() const {}
     virtual ImU32 getColor() const { return 0; }
+    virtual unsigned getChildID() const { return 0; }
+    virtual bool isBusBit() const {
+      return false;
+    }
+    virtual bool isLeaf() const {
+      return false;
+    }
     virtual bool isBitTerm() const {
       return false;
     }
+    virtual int getBusBit() const {
+      return 0;
+    }
+    virtual void getPath(NetlistTree::Path& path) const;
   protected:
     NetlistTreeNode(NetlistTree* tree);
     NetlistTreeNode(NetlistTreeNode* parent);
@@ -62,6 +111,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     NetlistTreeInstanceNode(
       NetlistTreeNode* parent,
       const std::string& name,
+      unsigned childID,
       const DesignRef& design_ref,
       bool hasTerms,
       bool hasPrimitives,
@@ -72,10 +122,15 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual bool isRoot() const override { return isRoot_; }
     virtual DesignRef getDesignRef() const override { return designRef_; }
     virtual std::string getLabel() const override;
-    virtual void sendLoadRequest() const override;
+    virtual void getPath(NetlistTree::Path& path) const override;
+    virtual unsigned getChildID() const override { return childID_; }
+    virtual bool isLeaf() const override {
+      return !(hasTerms_ || hasPrimitives_ || hasInstances_);
+    }
   private:
     bool        isRoot_         {false};
     std::string name_           {};
+    unsigned    childID_        {0};
     DesignRef   designRef_      {};
     bool        hasTerms_       {false};
     bool        hasPrimitives_  {false};
@@ -93,6 +148,9 @@ class NetlistTreeGroupNode : public NetlistTreeNode {
 
     virtual std::string getLabel() const override;
     virtual void sendLoadRequest() const override;
+    virtual bool isLeaf() const override {
+      return false;
+    }
   private:
     Type type_;
 };
@@ -101,6 +159,7 @@ class NetlistTreeTermNode : public NetlistTreeNode {
   public:
     NetlistTreeTermNode(NetlistTreeNode* parent,
                         const std::string& name,
+                        unsigned childID,
                         Direction direction,
                         std::optional<int> msb,
                         std::optional<int> lsb);
@@ -108,42 +167,42 @@ class NetlistTreeTermNode : public NetlistTreeNode {
     virtual std::string getLabel() const override;
     virtual ImU32 getColor() const override;
     virtual void expand() override;
-    virtual void sendLoadRequest() const override {}
+    virtual bool isLeaf() const override {
+      return isBitTerm();
+    }
     virtual bool isBitTerm() const override {
       return !(msb_.has_value() && lsb_.has_value());
     }
+    virtual unsigned getChildID() const override { return childID_; }
+    size_t getWidth() const;
   private:
     std::string         name_;
+    unsigned            childID_;
     Direction           direction_;
     std::optional<int>  msb_;
     std::optional<int>  lsb_;
 };
 
-class WebSocketClient;
-
-class NetlistTree {
+class NetlistTreeBusTermBitNode : public NetlistTreeNode {
   public:
-    using NodesMap = std::map<unsigned, NetlistTreeNode*>;
-    NetlistTree(const WebSocketClient* ws): ws_(ws) {}
-    NetlistTree(const NetlistTree&) = delete;
-    NetlistTree& operator=(const NetlistTree&) = delete;
-
-    void createRootNode(
-      const std::string& name,
-      const DesignRef& design_ref,
-      bool hasTerms,
-      bool hasPrimitives,
-      bool hasInstances);
-
-    NetlistTreeNode* getNode(unsigned id) const;
-    NetlistTreeNode* getRoot() const { return root_; }
-    const WebSocketClient* getWebSocketClient() const { return ws_; }
-
-    void render();
-    void insertNodeInMap(NetlistTreeNode* node);
+    NetlistTreeBusTermBitNode(
+      NetlistTreeTermNode* parent,
+      int bit
+    );
+    virtual bool isBitTerm() const override { return true; }
+    virtual std::string getLabel() const override;
+    virtual bool isLeaf() const override {
+      return true;
+    }
+    virtual bool isBusBit() const override {
+      return true;
+    }
+    virtual int getBusBit() const override{
+      return bit_;
+    }
+    virtual unsigned getChildID() const override {
+      return getParent()->getChildID();
+    }
   private:
-    const WebSocketClient*  ws_         {nullptr};
-    NetlistTreeNode*        root_       {nullptr};
-    unsigned                nextGUIID_ {0};
-    NodesMap                nodes_;
+    int bit_;
 };

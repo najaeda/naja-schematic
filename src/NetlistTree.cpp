@@ -32,8 +32,6 @@ NetlistTreeNode* NetlistTree::getNode(unsigned guiID) const {
   return (it != nodes_.end()) ? it->second : nullptr;
 }
 
-void NetlistTreeInstanceNode::sendLoadRequest() const {}
-
 std::string NetlistTreeInstanceNode::getLabel() const {
     std::string label;
     if (not name_.empty()) {
@@ -48,26 +46,36 @@ std::string NetlistTreeInstanceNode::getLabel() const {
     return label;
 }
 
+void NetlistTreeNode::getPath(NetlistTree::Path& path) const {
+  getParent()->getPath(path);
+}
+
 void NetlistTreeNode::render() {
   expand();
-  auto flags = ImGuiTreeNodeFlags_None;
-  if (children_ != nullptr and children_->empty()) {
-    flags = ImGuiTreeNodeFlags_Leaf;
+  ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow;
+  if (isLeaf()) {
+    flags = flags | ImGuiTreeNodeFlags_Leaf;
   }
   if (getColor() != 0) {
     ImGui::PushStyleColor(ImGuiCol_Text, getColor());
   }
-  auto isOpen = ImGui::TreeNodeEx(getLabel().c_str(), flags);
+  auto isOpen = ImGui::TreeNodeEx((void*)(intptr_t)guiID_, flags, "%s", getLabel().c_str());
   if (getColor() != 0) {
     ImGui::PopStyleColor();
   }
   if (isBitTerm()) {
     if (ImGui::BeginPopupContextItem()) {
-      ImGui::Text("Show Equipotential");
+      if (ImGui::MenuItem("Show Equipotential")) {
+        NetlistTree::Path path;
+        getPath(path);
+        getTree()->sendLoadEquipotential(
+          path,
+          NetlistTree::TermID{getChildID(), isBusBit(), getBusBit()});
+      }
       ImGui::EndPopup();
     }
   }
-  if (isOpen) {
+  if (isOpen and not isLeaf()) {
     if (children_ != nullptr) {
       for (auto child : *children_) {
         child->render();
@@ -81,7 +89,8 @@ void NetlistTreeNode::render() {
       }
       ImGui::TreePop();
     }
-    // Render children here in the future
+  }
+  if (isOpen) {
     ImGui::TreePop();
   }
 }
@@ -94,21 +103,34 @@ NetlistTreeInstanceNode::NetlistTreeInstanceNode(
     bool hasPrimitives,
     bool hasInstances):
     NetlistTreeNode(tree),
-    isRoot_(true), name_(name), designRef_(designRef),
+    isRoot_(true), name_(name),
+    childID_(0),designRef_(designRef),
     hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances)
 {}
 
 NetlistTreeInstanceNode::NetlistTreeInstanceNode(
     NetlistTreeNode* parent,
     const std::string& name,
+    unsigned childID,
     const DesignRef& designRef,
     bool hasTerms,
     bool hasPrimitives,
     bool hasInstances):
     NetlistTreeNode(parent),
-    isRoot_(false), name_(name), designRef_(designRef),
+    isRoot_(false), name_(name),
+    childID_(childID), designRef_(designRef),
     hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances)
 {}
+
+void NetlistTreeInstanceNode::getPath(NetlistTree::Path& path) const {
+  if (isRoot()) {
+    path = NetlistTree::Path();
+    return;
+  } else {
+    getParent()->getPath(path);
+  }
+  path.push_back(childID_);
+}
 
 NetlistTreeGroupNode::NetlistTreeGroupNode(
   NetlistTreeNode* parent,
@@ -165,29 +187,47 @@ void NetlistTreeGroupNode::sendLoadRequest() const {
 NetlistTreeTermNode::NetlistTreeTermNode(
   NetlistTreeNode* parent,
   const std::string& name,
+  unsigned childID,
   Direction direction,
   std::optional<int> msb,
   std::optional<int> lsb):
-  NetlistTreeNode(parent), name_(name), direction_(direction), msb_(msb), lsb_(lsb) {
+  NetlistTreeNode(parent), name_(name), childID_(childID), direction_(direction), msb_(msb), lsb_(lsb) {
   if (not msb_.has_value() or not lsb_.has_value()) { //scalar
     children_ = new Children();
   }
+}
+
+size_t NetlistTreeTermNode::getWidth() const {
+  return std::abs(msb_.value_or(0) - lsb_.value_or(0)) + 1;
 }
 
 void NetlistTreeTermNode::expand() {
   if (children_ == nullptr) {
     children_ = new Children();
     if (msb_.has_value() and lsb_.has_value()) {
-
+      int msb = msb_.value();
+      int lsb = lsb_.value();
+      auto width = getWidth();
+      for (size_t i=0; i<width; i++) {
+        int bit = (msb>lsb)?msb-int(i):msb+int(i);
+        children_->push_back(new NetlistTreeBusTermBitNode(
+          this,
+          bit
+        ));
+      }
     }
   }
 }
 
 std::string NetlistTreeTermNode::getLabel() const {
+  std::string name;
   if (not name_.empty()) {
-    return name_;
+    name = name_;
   } else {
-    return "<unnamed>";
+    name = "<unnamed>";
+  }
+  if (not isBitTerm()) {
+    name += "[" + std::to_string(msb_.value()) + ":" + std::to_string(lsb_.value()) + "]";
   }
   return name_;
 }
@@ -203,6 +243,16 @@ ImU32 NetlistTreeTermNode::getColor() const {
     default:
       return 0;
   }
+}
+
+NetlistTreeBusTermBitNode::NetlistTreeBusTermBitNode(
+  NetlistTreeTermNode* parent,
+  int bit
+): NetlistTreeNode(parent), bit_(bit)
+{}
+
+std::string NetlistTreeBusTermBitNode::getLabel() const {
+  return std::to_string(bit_);
 }
 
 void NetlistTreeNode::createChildren() {
@@ -227,20 +277,26 @@ void NetlistTreeInstanceNode::expand() {
 
 void NetlistTreeNode::createTermNode(
   const std::string& name,
+  unsigned childID,
   Direction direction,
   std::optional<int> msb,
   std::optional<int> lsb) {
   //this should be a group node of type Terms
-  children_->push_back(new NetlistTreeTermNode(this, name, direction, msb, lsb));
+  children_->push_back(new NetlistTreeTermNode(this, name, childID, direction, msb, lsb));
 }
 
 void NetlistTreeNode::createInstanceNode(
   const std::string& name,
+  unsigned childID,
   const DesignRef& design_ref,
   bool hasTerms,
   bool hasPrimitives,
   bool hasInstances) {
-  auto node = new NetlistTreeInstanceNode(this, name, design_ref, hasTerms, hasPrimitives, hasInstances);
+  auto node = new NetlistTreeInstanceNode(
+    this, name,
+    childID,
+    design_ref,
+    hasTerms, hasPrimitives, hasInstances);
   children_->push_back(node);
 }
 
@@ -264,4 +320,23 @@ NetlistTree* NetlistTreeNode::getTree() const {
     return static_cast<NetlistTree*>(parent_);
   }
   return getParent()->getTree();
+}
+
+void NetlistTree::sendLoadEquipotential(const NetlistTree::Path& path, const TermID& termID) const {
+  std::string request = R"({"request":"load_equipotential",)";
+  request += R"("path":[)";
+  for (size_t i = 0; i < path.size(); ++i) {
+    request += std::to_string(path[i]);
+    if (i < path.size() - 1) {
+      request += ",";
+    }
+  }
+  request += R"(],)";
+  request += R"("term_id":)" + std::to_string(termID.id);
+  if (termID.isBusBit) {
+    request += R"(,"bit":)" + std::to_string(termID.busBit);
+  }
+  request += R"(})";
+  Console::Log("Sending load equipotential request: " + request);
+  ws_->send(request);
 }
