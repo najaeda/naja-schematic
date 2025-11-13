@@ -1,4 +1,6 @@
+from glob import glob
 from najaeda import netlist, naja
+import argparse
 import asyncio
 import websockets
 import json
@@ -218,14 +220,41 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Load the liberty libraries and the Verilog design
-    liberty_files = [
-        'NangateOpenCellLibrary_typical.lib',
-        'fakeram45_64x32.lib',
-    ]
-    netlist.load_liberty(liberty_files)
+    parser = argparse.ArgumentParser(description="najaeda WebSocket Server")
+    parser.add_argument("--port", type=int, default=8081,
+                        help="Port to run the websocket server on (default: 8081)")
+    parser.add_argument("--xilinx", action="store_true",
+                        help="Load Xilinx primitives")
+    parser.add_argument("--liberty", nargs="*", help="List of liberty files to load")
+    parser.add_argument("--verilog", type=str,
+                        help="Verilog netlist to load")
+    args = parser.parse_args()
 
-    top = netlist.load_verilog('tinyrocket.v')
-    print(f"✅ Design loaded: {top.get_name()}")
+    PORT = args.port
+
+    if args.xilinx:
+        print("📦 Loading Xilinx primitives")
+        netlist.load_primitives('xilinx')
+
+    # Load the liberty libraries and the Verilog design
+    if args.liberty:
+        #if arg contains *, expand to list of files
+        expanded_liberty_files = []
+        for lib in args.liberty:
+            if '*' in lib:
+                expanded_liberty_files.extend(glob.glob(lib))
+            else:
+                expanded_liberty_files.append(lib)
+        for lib in expanded_liberty_files:
+            print(f"📚 Loading liberty file: {lib}")
+            netlist.load_liberty(lib)
+
+    if not args.verilog:
+        print("❌ No Verilog file specified. Use --verilog to provide a netlist.")
+        exit(1)
+    else:
+        print(f"📄 Loading Verilog netlist: {args.verilog}")
+        top = netlist.load_verilog(args.verilog)
+        print(f"✅ Design loaded: {top.get_name()}")
 
     asyncio.run(main())
