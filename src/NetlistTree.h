@@ -44,6 +44,8 @@ class NetlistTree {
     NodesMap                nodes_;
 };
 
+class NetlistTreeInstanceNode;
+
 class NetlistTreeNode {
   friend class NetlistTree;
   public:
@@ -66,6 +68,7 @@ class NetlistTreeNode {
       bool hasInstances);
     void createChildren();
     bool hasChildren() const { return children_ != nullptr; }
+    virtual NetlistTreeInstanceNode* getInstanceNode() const;
     virtual DesignRef getDesignRef() const;
     virtual void expand() {}
     virtual std::string getLabel() const = 0;
@@ -127,6 +130,9 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual bool isLeaf() const override {
       return !(hasTerms_ || hasPrimitives_ || hasInstances_);
     }
+    virtual NetlistTreeInstanceNode* getInstanceNode() const override {
+      return const_cast<NetlistTreeInstanceNode*>(this);
+    }
   private:
     bool        isRoot_         {false};
     std::string name_           {};
@@ -174,6 +180,7 @@ class NetlistTreeTermNode : public NetlistTreeNode {
       return !(msb_.has_value() && lsb_.has_value());
     }
     virtual unsigned getChildID() const override { return childID_; }
+    bool isTopTerm() const;
     size_t getWidth() const;
   private:
     std::string         name_;
@@ -202,6 +209,9 @@ class NetlistTreeBusTermBitNode : public NetlistTreeNode {
     }
     virtual unsigned getChildID() const override {
       return getParent()->getChildID();
+    }
+    bool isTopTerm() const {
+      return getInstanceNode()->isRoot();
     }
   private:
     int bit_;

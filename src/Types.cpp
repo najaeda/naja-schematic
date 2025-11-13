@@ -2,6 +2,20 @@
 
 #include "Console.h"
 
+Direction intToDirection(int dirInt) {
+  switch (dirInt) {
+    case 0:
+      return Direction::Input;
+    case 1:
+      return Direction::Output;
+    case 2:
+      return Direction::Inout;
+    default:
+      Console::Error("Invalid direction: " + std::to_string(dirInt) + ", defaulting to Input");
+      return Direction::Input;
+  }
+}
+
 void from_json(const json& j, DesignRef& d) {
   j.at("db_id").get_to(d.db_id);
   j.at("library_id").get_to(d.library_id);
@@ -22,7 +36,6 @@ void from_json(const json& j, InstanceResponseJson& r) {
 }
 
 void from_json(const json& j, InstancesResponseJson& instances) {
-  j.at("found").get_to(instances.found);
   j.at("gui_id").get_to(instances.gui_id);
 
   if (j.contains("children") && j["children"].is_array()) {
@@ -33,7 +46,6 @@ void from_json(const json& j, InstancesResponseJson& instances) {
 }
 
 void from_json(const json& j, TermsResponseJson& t) {
-  j.at("found").get_to(t.found);
   j.at("gui_id").get_to(t.gui_id);
 
   if (j.contains("children") && j["children"].is_array()) {
@@ -44,7 +56,10 @@ void from_json(const json& j, TermsResponseJson& t) {
         term.name = child["name"].get<std::string>();
       }
       child.at("child_id").get_to(term.child_id);
-      child.at("direction").get_to(term.direction);
+
+      if (child.contains("direction") && !child["direction"].is_null()) {
+        term.direction = intToDirection(child["direction"].get<int>());
+      }
 
       if (child.contains("msb") && !child["msb"].is_null()) {
         term.msb = child["msb"].get<int>();
@@ -59,6 +74,65 @@ void from_json(const json& j, TermsResponseJson& t) {
       }
 
       t.children.push_back(std::move(term));
+    }
+  }
+}
+
+void from_json(const json& j, Equipotential& e) {
+  if (j.contains("terms") && j["terms"].is_array()) {
+    for (const auto& termJson : j["terms"]) {
+      BitTerm term;
+      if (termJson.contains("name") && !termJson["name"].is_null()) {
+        term.name = termJson["name"].get<std::string>();
+      }
+      if (termJson.contains("direction") && !termJson["direction"].is_null()) {
+        term.direction = intToDirection(termJson["direction"].get<int>());
+      }
+      if (termJson.contains("bit") && !termJson["bit"].is_null()) {
+        term.bit = termJson["bit"].get<int>();
+      } else {
+        term.bit = std::nullopt;
+      }
+
+      e.terms.push_back(std::move(term));
+    }
+
+    for (const auto& occJson : j["occurrences"]) {
+      InstTermOccurrence occurrence;
+
+      if (occJson.contains("path") && occJson["path"].is_array()) {
+        for (const auto& pathElem : occJson["path"]) {
+          //pathElem is a table of 2 elements: {name:..., child_id:...}
+          if (!pathElem.is_array()) {
+            continue;
+          }
+          const auto& name = pathElem[0].get<std::string>();
+          const auto& child_id = pathElem[1].get<unsigned>();
+          occurrence.path.push_back(name);
+        }
+      }
+
+      BitTerm term;
+      if (occJson.contains("name") && !occJson["name"].is_null()) {
+        term.name = occJson["name"].get<std::string>();
+      }
+      if (occJson.contains("child_id") && !occJson["child_id"].is_null()) {
+        term.child_id = occJson["child_id"].get<unsigned>();
+      }
+      if (occJson.contains("direction") && !occJson["direction"].is_null()) {
+        term.direction = intToDirection(occJson["direction"].get<int>());
+      }
+      if (occJson.contains("bit") && !occJson["bit"].is_null()) {
+        term.bit = occJson["bit"].get<int>();
+      } else {
+        term.bit = std::nullopt;
+      }
+
+      Console::Log("Parsed term in occurrence: " + term.getString());
+
+      occurrence.term = std::move(term);
+
+      e.occurrences.push_back(std::move(occurrence));
     }
   }
 }

@@ -41,11 +41,18 @@ def serialize_model(model, child_id, name):
         "has_instances": model.hasNonPrimitiveInstances(),
     }
 
+def direction_to_int(direction):
+    if direction == naja.SNLTerm.Direction.Input:
+        return 0
+    elif direction == naja.SNLTerm.Direction.Output:
+        return 1
+    else:
+        return 2
+
 
 async def send_error(websocket, response_type, gui_id=0):
     await websocket.send(json.dumps({
         "response": response_type,
-        "found": False,
         "gui_id": gui_id
     }))
 
@@ -66,17 +73,12 @@ async def handle_connection(websocket):
                 top = u.getTopDesign()
 
                 if not top:
+                    send_error(websocket, "root_response")
+                else:
                     await websocket.send(json.dumps({
                         "response": "root_response",
-                        "found": False
+                        "root": serialize_model(top, 0, top.getName())
                     }))
-                    continue
-
-                await websocket.send(json.dumps({
-                    "response": "root_response",
-                    "found": True,
-                    "root": serialize_model(top, 0, top.getName())
-                }))
 
             elif req_type in {"load_instance", "load_primitives", "load_instances", "load_terms"}:
                 if not design_ref_message:
@@ -94,7 +96,6 @@ async def handle_connection(websocket):
                 if req_type == "load_instance":
                     await websocket.send(json.dumps({
                         "response": "instance_response",
-                        "found": True,
                         "gui_id": gui_id,
                         "instance": {
                             "design_ref": {
@@ -121,7 +122,6 @@ async def handle_connection(websocket):
                     response_type = req_type.replace("load_", "") + "_response"
                     await websocket.send(json.dumps({
                         "response": response_type,
-                        "found": True,
                         "gui_id": gui_id,
                         "children": children
                     }))
@@ -129,16 +129,13 @@ async def handle_connection(websocket):
                     terms = [
                         { "name": term.getName(),
                           "child_id": term.getID(),
-                          "direction": 0 if term.getDirection() == naja.SNLTerm.Direction.Input
-                                        else 1 if term.getDirection() == naja.SNLTerm.Direction.Output
-                                        else 2,
+                          "direction": direction_to_int(term.getDirection()),
                           "msb": term.getMSB() if isinstance(term, naja.SNLBusTerm) else None,
                           "lsb": term.getLSB() if isinstance(term, naja.SNLBusTerm) else None,
                         } for term in design.getTerms()
                     ]
                     await websocket.send(json.dumps({
                         "response": "terms_response",
-                        "found": True,
                         "gui_id": gui_id,
                         "children": terms
                     }))
@@ -154,11 +151,31 @@ async def handle_connection(websocket):
                 design = None
                 if path.empty():
                     design = u.getTopDesign()
-                    start_point = design.getTermByID(term_id)
+                    term = design.getTermByID(term_id)
+                    print(f"🔍 Term resolved: {term}")
+                    if bit is not None:
+                        if not isinstance(term, naja.SNLBusTerm):
+                            print(f"⚠️ Term is not a bus term but bit {bit} was specified")
+                            await send_error(websocket, "equipotential_response")
+                            continue
+                        start_point = term.getBusTermBit(bit)
+                    else:
+                        start_point = term
                 else:
                     design = path.getModel()
                     term = design.getTermByID(term_id)
-                    start_point = naja.SNLInstTermOccurrence(path, term)
+                    instance = path.getTailInstance()
+                    if bit is not None:
+                        if not isinstance(term, naja.SNLBusTerm):
+                            print(f"⚠️ Term is not a bus term but bit {bit} was specified")
+                            await send_error(websocket, "equipotential_response")
+                            continue
+                        term = term.getBusTermBit(bit)
+                    print(f"🔍 Term resolved: {term}")
+                    inst_term = instance.getInstTerm(term)
+                    print(f"🔗 Instance Term: {inst_term}")
+                    head_path = path.getHeadPath()
+                    start_point = naja.SNLOccurrence(head_path, inst_term)
                 print(f"🔍 Start point: {start_point}")
                 equipotential = naja.SNLEquipotential(start_point)
                 occurrences = []
@@ -171,34 +188,22 @@ async def handle_connection(websocket):
                     occurrences.append({
                         "path": path,
                         "term_id": term.getID(),
+                        "name": term.getName(),
+                        "direction": direction_to_int(term.getDirection()),
+                        "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None
                     })
                 for term in equipotential.getTerms():
                     terms.append({
                         "name": term.getName(),
                         "child_id": term.getID(),
-                        "direction": 0 if term.getDirection() == naja.SNLTerm.Direction.Input
-                                      else 1 if term.getDirection() == naja.SNLTerm.Direction.Output
-                                      else 2,
-                        "bit": None
+                        "direction": direction_to_int(term.getDirection()),
+                        "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None
                     })
                 await websocket.send(json.dumps({
                     "response": "equipotential_response",
-                    "found": True,
-                    "gui_id": gui_id,
                     "occurrences": occurrences,
                     "terms": terms
                 }))
-
-                #if bit is not None:
-                #    #term_occurrence = naja.SNLBusTermOccurrence(path, term, bit)
-                #if term_id. get("type") == "term":
-                #    term = path.getDesign().getTermByID(term_id.get("child_id"))
-                #    term_occurrence = naja.SNLTermOccurrence(path, term)
-                #term_occurrence = naja.SNLTermOccurrence(path, )
-                #bit = u.getTermBitOccurrence(term_id_msg)
-                # Equipotential loading not implemented yet
-                await send_error(websocket, "equipotential_response", gui_id)
-
             else:
                 print(f"⚠️ Unknown request type: {req_type}")
 

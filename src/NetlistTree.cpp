@@ -154,6 +154,10 @@ DesignRef NetlistTreeNode::getDesignRef() const {
   return getParent()->getDesignRef();
 }
 
+NetlistTreeInstanceNode* NetlistTreeNode::getInstanceNode() const {
+  return getParent()->getInstanceNode();
+}
+
 void NetlistTreeGroupNode::sendLoadRequest() const {
   Console::Log("Sending load request for group: " + getLabel());
   std::string request;
@@ -197,6 +201,10 @@ NetlistTreeTermNode::NetlistTreeTermNode(
   }
 }
 
+bool NetlistTreeTermNode::isTopTerm() const {
+  return getInstanceNode()->isRoot();
+}
+
 size_t NetlistTreeTermNode::getWidth() const {
   return std::abs(msb_.value_or(0) - lsb_.value_or(0)) + 1;
 }
@@ -235,9 +243,17 @@ std::string NetlistTreeTermNode::getLabel() const {
 ImU32 NetlistTreeTermNode::getColor() const {
   switch (direction_) {
     case Direction::Input:
-      return IM_COL32(0, 255, 0, 255); // Green
+      if (isTopTerm()) {
+        return IM_COL32(255, 0, 0, 255); // Red
+      } else {
+        return IM_COL32(0, 255, 0, 255); // Green
+      }
     case Direction::Output:
-      return IM_COL32(255, 0, 0, 255); // Red
+      if (isTopTerm()) {
+        return IM_COL32(0, 255, 0, 255); // Green
+      } else {
+        return IM_COL32(255, 0, 0, 255); // Red
+      }
     case Direction::Inout:
       return IM_COL32(255, 255, 0, 255); // Yellow
     default:

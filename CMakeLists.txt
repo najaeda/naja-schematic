@@ -39,8 +39,10 @@ include_directories(
 set(SOURCES
     src/Console.cpp
     src/Types.cpp
+    src/GUIData.cpp
     src/NetlistTree.cpp
     src/WebSocketClient.cpp
+    src/EquipotentialView.cpp
     src/main.cpp
     ${IMGUI_SOURCES}
 )
