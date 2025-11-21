@@ -232,7 +232,7 @@ int main() {
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 
-  window = SDL_CreateWindow("ImGui WASM",
+  window = SDL_CreateWindow("najaeda Netlist Viewer",
                             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                             1280, 720, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
   gl_context = SDL_GL_CreateContext(window);
