@@ -16,3 +16,8 @@ cmake --build .
 
 ```
 
+## Launching
+```bash
+emrun --port 8080 naja-schematic.html
+```
+
