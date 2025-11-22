@@ -113,94 +113,107 @@ void EquipotentialView::render(Equipotential* equipotential) {
         // First: create one instance + one port per top-level term (equipotential->terms)
         // Terms are placed in a row above the center
         xOffset = leftMargin;
+
+        size_t numberOfItems = 0;
+
         for (size_t t = 0; t < equipotential->terms.size(); ++t) {
-            const auto& bitTerm = equipotential->terms[t];
-
-            // Instance name derived from term name (fallback to generated)
-            std::string instName = bitTerm.name.empty() ? ("TERM" + std::to_string(nextInstanceId)) : bitTerm.name;
-
-            InstanceShape inst;
-            inst.id = nextInstanceId++;
-            inst.name =  bitTerm.getString();
-            inst.x = xOffset;
-            inst.y = canvasCenterY - instH * 0.5f - 120.0f; // place terms row above occurrences for clarity
-            inst.w = 50.0f;
-            inst.h = 50.0f;
-            inst.color = IM_COL32(180, 120, 200, 255);
-
-            // Create a single port for this term
-            Port p;
-            p.id = nextPortId++;
-            p.name = std::string("");
-            if (bitTerm.direction == Direction::Output) p.lx = -0.5f;
-            else if (bitTerm.direction == Direction::Input) p.lx = 0.5f;
-            else p.lx = 0.0f;
-            p.ly = 0.0f;
-
-            // Term port color rule: if NOT Output -> red, otherwise green.
-            // NetRenderer draws red when p.isInput == true, green when false.
-            // So set p.isInput = (bitTerm.direction != Direction::Output)
-            p.isInput = (bitTerm.direction != Direction::Output);
-
-            inst.ports.push_back(p);
-            g_renderer.instances.push_back(inst);
-
-            // record port ref
-            allPortRefs.push_back({ inst.id, p.id });
-
-            xOffset += instW + spacing;
+            numberOfItems++;
         }
-
-        // Second: create one instance + one port per occurrence (equipotential->occurrences)
-        xOffset = leftMargin;
         for (size_t idx = 0; idx < equipotential->occurrences.size(); ++idx) {
-            const auto& occ = equipotential->occurrences[idx];
-            const auto& bitTerm = occ.term;
-
-            // Instance name: last element of path if available, otherwise a generated name
-            std::string instName = "INST" + std::to_string(nextInstanceId);
-            if (!occ.path.empty()) instName = occ.path.back();
-
-            InstanceShape inst;
-            inst.id = nextInstanceId++;
-            std::string concatedPaths;
-            for (auto name : occ.path) {
-                concatedPaths += "/" + name;
-            }
-            inst.name = concatedPaths;
-            inst.x = xOffset;
-            inst.y = canvasCenterY - instH * 0.5f + 40.0f; // place occurrences row below center
-            inst.w = instW;
-            inst.h = instH;
-            if ((idx & 1) == 0) inst.color = IM_COL32(100, 140, 200, 255);
-            else inst.color = IM_COL32(120, 200, 140, 255);
-
-            // Create a single port for this occurrence
-            Port p;
-            p.id = nextPortId++;
-            p.name = bitTerm.getString();
-            if (bitTerm.direction == Direction::Input) p.lx = -0.5f;
-            else if (bitTerm.direction == Direction::Output) p.lx = 0.5f;
-            else p.lx = 0.0f;
-            p.ly = 0.0f;
-
-            // Occurrence port color rule (user requested earlier):
-            // "for occurrence if not input so green, otherwise red."
-            // NetRenderer draws red when p.isInput == true, green when false.
-            // To make INPUT occurrences appear green (as you reported you want),
-            // set p.isInput = (bitTerm.direction != Direction::Input)
-            // - if direction == Input -> p.isInput = false -> green
-            // - if direction != Input -> p.isInput = true  -> red
-            p.isInput = (bitTerm.direction != Direction::Input);
-
-            inst.ports.push_back(p);
-            g_renderer.instances.push_back(inst);
-
-            // record port ref
-            allPortRefs.push_back({ inst.id, p.id });
-
-            xOffset += instW + spacing;
+            numberOfItems++;
         }
+        if (numberOfItems < 16 /*Error out otherwise*/) {
+            for (size_t t = 0; t < equipotential->terms.size(); ++t) {
+                const auto& bitTerm = equipotential->terms[t];
+
+                // Instance name derived from term name (fallback to generated)
+                std::string instName = bitTerm.name.empty() ? ("TERM" + std::to_string(nextInstanceId)) : bitTerm.name;
+
+                InstanceShape inst;
+                inst.id = nextInstanceId++;
+                inst.name =  bitTerm.getString();
+                inst.x = xOffset;
+                inst.y = canvasCenterY - instH * 0.5f - 120.0f; // place terms row above occurrences for clarity
+                inst.w = 50.0f;
+                inst.h = 50.0f;
+                inst.color = IM_COL32(180, 120, 200, 255);
+
+                // Create a single port for this term
+                Port p;
+                p.id = nextPortId++;
+                p.name = std::string("");
+                if (bitTerm.direction == Direction::Output) p.lx = -0.5f;
+                else if (bitTerm.direction == Direction::Input) p.lx = 0.5f;
+                else p.lx = 0.0f;
+                p.ly = 0.0f;
+
+                // Term port color rule: if NOT Output -> red, otherwise green.
+                // NetRenderer draws red when p.isInput == true, green when false.
+                // So set p.isInput = (bitTerm.direction != Direction::Output)
+                p.isInput = (bitTerm.direction != Direction::Output);
+
+                inst.ports.push_back(p);
+                g_renderer.instances.push_back(inst);
+
+                // record port ref
+                allPortRefs.push_back({ inst.id, p.id });
+
+                xOffset += instW + spacing;
+                numberOfItems++;
+            }
+
+            // Second: create one instance + one port per occurrence (equipotential->occurrences)
+            xOffset = leftMargin;
+            for (size_t idx = 0; idx < equipotential->occurrences.size(); ++idx) {
+                const auto& occ = equipotential->occurrences[idx];
+                const auto& bitTerm = occ.term;
+
+                // Instance name: last element of path if available, otherwise a generated name
+                std::string instName = "INST" + std::to_string(nextInstanceId);
+                if (!occ.path.empty()) instName = occ.path.back();
+
+                InstanceShape inst;
+                inst.id = nextInstanceId++;
+                std::string concatedPaths;
+                for (auto name : occ.path) {
+                    concatedPaths += "/" + name;
+                }
+                inst.name = concatedPaths;
+                inst.x = xOffset;
+                inst.y = canvasCenterY - instH * 0.5f + 40.0f; // place occurrences row below center
+                inst.w = instW;
+                inst.h = instH;
+                if ((idx & 1) == 0) inst.color = IM_COL32(100, 140, 200, 255);
+                else inst.color = IM_COL32(120, 200, 140, 255);
+
+                // Create a single port for this occurrence
+                Port p;
+                p.id = nextPortId++;
+                p.name = bitTerm.getString();
+                if (bitTerm.direction == Direction::Input) p.lx = -0.5f;
+                else if (bitTerm.direction == Direction::Output) p.lx = 0.5f;
+                else p.lx = 0.0f;
+                p.ly = 0.0f;
+
+                // Occurrence port color rule (user requested earlier):
+                // "for occurrence if not input so green, otherwise red."
+                // NetRenderer draws red when p.isInput == true, green when false.
+                // To make INPUT occurrences appear green (as you reported you want),
+                // set p.isInput = (bitTerm.direction != Direction::Input)
+                // - if direction == Input -> p.isInput = false -> green
+                // - if direction != Input -> p.isInput = true  -> red
+                p.isInput = (bitTerm.direction != Direction::Input);
+
+                inst.ports.push_back(p);
+                g_renderer.instances.push_back(inst);
+
+                // record port ref
+                allPortRefs.push_back({ inst.id, p.id });
+
+                xOffset += instW + spacing;
+                numberOfItems++;
+            }
+        }   
 
         // --- Connect all ports to the same net (star topology) ---
         // If there are at least two ports, choose the first port as the hub and create nets from hub to every other port.
