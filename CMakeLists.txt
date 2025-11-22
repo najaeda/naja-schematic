@@ -44,6 +44,8 @@ set(SOURCES
     src/WebSocketClient.cpp
     src/EquipotentialView.cpp
     src/main.cpp
+    src/NetRenderer.h
+    src/NetRenderer.cpp
     ${IMGUI_SOURCES}
 )
 
