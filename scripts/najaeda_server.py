@@ -225,6 +225,8 @@ if __name__ == "__main__":
                         help="Port to run the websocket server on (default: 8081)")
     parser.add_argument("--xilinx", action="store_true",
                         help="Load Xilinx primitives")
+    parser.add_argument("--allow_unknown_designs", action="store_true",
+                        help="Allow unknown designs when loading the design.")
     parser.add_argument("--liberty", nargs="*", help="List of liberty files to load")
     parser.add_argument("--verilog", type=str,
                         help="Verilog netlist to load")
@@ -254,7 +256,9 @@ if __name__ == "__main__":
         exit(1)
     else:
         print(f"📄 Loading Verilog netlist: {args.verilog}")
-        top = netlist.load_verilog(args.verilog)
+        config = netlist.VerilogConfig()
+        config.allow_unknown_designs = args.allow_unknown_designs
+        top = netlist.load_verilog(args.verilog, config=config)
         print(f"✅ Design loaded: {top.get_name()}")
 
     asyncio.run(main())

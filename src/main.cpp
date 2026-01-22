@@ -39,6 +39,7 @@ void setupWebsocket() {
     auto j = json::parse(msg);
     std::string resp = j.value("response", "");
     if (resp == "root_response") {
+      Console::Log("✅ Root node data received");
       InstanceResponseJson data = j["root"].get<InstanceResponseJson>();
       guiData->netlist_->createRootNode(
         data.name,
