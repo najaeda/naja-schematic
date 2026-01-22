@@ -36,29 +36,88 @@ void setupWebsocket() {
 
   ws->on_message([&](const std::string& msg) {
     Console::Log("📩 Message received: " + msg);
-    auto j = json::parse(msg);
+    std::string clean = msg;
+    auto nullPos = clean.find('\0');
+    if (nullPos != std::string::npos) {
+      clean.resize(nullPos);
+    }
+    while (!clean.empty() && (clean.back() == '\n' || clean.back() == '\r' || clean.back() == ' ' || clean.back() == '\t')) {
+      clean.pop_back();
+    }
+    json j;
+    try {
+      j = json::parse(clean);
+    } catch (const std::exception& e) {
+      Console::Error("Failed to parse JSON message: " + std::string(e.what()));
+      return;
+    }
     std::string resp = j.value("response", "");
-    if (resp == "root_response") {
+    if (resp.empty()) {
+      Console::Error("Missing response field in message.");
+    }
+    if (resp == "root_response" || resp == "root_loaded") {
       Console::Log("✅ Root node data received");
-      InstanceResponseJson data = j["root"].get<InstanceResponseJson>();
-      guiData->netlist_->createRootNode(
-        data.name,
-        data.design_ref,
-        data.has_terms,
-        data.has_primitives,
-        data.has_instances
-      );
-    } else if (resp == "instances_response" or resp == "primitives_response") {
-      InstancesResponseJson data = j.get<InstancesResponseJson>();
-      auto parent = guiData->netlist_->getNode(data.gui_id);
+      const auto& root = j["root"];
+      if (root.contains("has_terms") || root.contains("has_primitives") || root.contains("has_instances")) {
+        InstanceResponseJson data = root.get<InstanceResponseJson>();
+        guiData->netlist_->createRootNode(
+          data.name,
+          data.design_ref,
+          data.has_terms,
+          data.has_primitives,
+          data.has_instances
+        );
+      } else {
+        DesignRef designRef{};
+        if (root.contains("design_ref")) {
+          designRef = root["design_ref"].get<DesignRef>();
+        }
+        const bool hasChildren = root.value("has_children", false);
+        guiData->netlist_->createRootNode(
+          root.value("name", std::string("<unnamed root>")),
+          designRef,
+          false,
+          false,
+          hasChildren
+        );
+      }
+    } else if (resp == "instances_response" || resp == "primitives_response" || resp == "children_loaded") {
+      unsigned gui_id = 0;
+      std::vector<InstanceResponseJson> children;
+      if (resp == "children_loaded") {
+        gui_id = j.value("node_gui_id", 0);
+        const auto& rawChildren = j["children"];
+        if (rawChildren.is_array()) {
+          for (const auto& child : rawChildren) {
+            InstanceResponseJson item;
+            item.name = child.value("name", "");
+            item.model_name = child.value("model_name", "");
+            item.child_id = child.value("instance_id", 0);
+            if (child.contains("design_ref")) {
+              item.design_ref = child["design_ref"].get<DesignRef>();
+            }
+            bool hasChildren = child.value("has_children", false);
+            item.has_terms = false;
+            item.has_primitives = false;
+            item.has_instances = hasChildren;
+            children.push_back(std::move(item));
+          }
+        }
+      } else {
+        InstancesResponseJson data = j.get<InstancesResponseJson>();
+        gui_id = data.gui_id;
+        children = std::move(data.children);
+      }
+      auto parent = guiData->netlist_->getNode(gui_id);
       if (!parent) {
-        Console::Error("Cannot find node: " + std::to_string(data.gui_id));
+        Console::Error("Cannot find node: " + std::to_string(gui_id));
+        return;
       }
       if (parent->hasChildren()) {
         Console::Error("internal error");
       }
       parent->createChildren();
-      for (auto instance: data.children) {
+      for (auto instance: children) {
         parent->createInstanceNode(
           instance.name,
           instance.child_id,
@@ -73,6 +132,7 @@ void setupWebsocket() {
       auto parent = guiData->netlist_->getNode(data.gui_id);
       if (!parent) {
         Console::Error("Cannot find node: " + std::to_string(data.gui_id));
+        return;
       }
       if (parent->hasChildren()) {
         Console::Error("internal error");
@@ -241,6 +301,8 @@ int main() {
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
   ImGui_ImplOpenGL3_Init("#version 300 es");
 

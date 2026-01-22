@@ -15,53 +15,83 @@ async def handle_connection(websocket):
 
             if request.get("request") == "load_root":
                 print("📦 LoadRoot request received")
-                await websocket.send(json.dumps({
-                    "response": "root_loaded",
+                response = {
+                    "response": "root_response",
                     "root": {
                         "name": "TOP",
-                        "instance_id": 0,
+                        "child_id": 0,
                         "model_name": "TOP",
                         "design_ref": {
                             "db_id": 1,
                             "library_id": 1,
                             "design_id": 1
                         },
-                        "has_children": True
+                        "has_terms": True,
+                        "has_primitives": True,
+                        "has_instances": True
                     }
-                }))
-            elif request.get("request") == "load_children":
-                node = request.get("node")
-                print(f"🔍 Load children for: {node}")
+                }
+                print(f"📤 Sent: {json.dumps(response)}")
+                await websocket.send(json.dumps(response))
+            elif request.get("request") in {"load_instances", "load_primitives"}:
+                gui_id = request.get("gui_id", 0)
+                print(f"🔍 Load instances/primitives for gui_id: {gui_id}")
 
-                # Create DesignRef (from the original request or hardcoded for demo)
-                design_ref = {
+                design_ref = request.get("design_ref") or {
                     "db_id": 1,
                     "library_id": 1,
                     "design_id": 1
                 }
 
-                # Create children compatible with NetlistTreeNodeJson
-                await websocket.send(json.dumps({
-                    "response": "children_loaded",
-                    "node_gui_id": request.get("node_gui_id"),
+                response = {
+                    "response": "instances_response" if request.get("request") == "load_instances" else "primitives_response",
+                    "gui_id": gui_id,
                     "children": [
                         {
-                            "name": f"{node}_Child1",
-                            "instance_id": 101,
+                            "name": "U1",
+                            "child_id": 101,
                             "model_name": "child_model_1",
                             "design_ref": design_ref,
-                            "has_children": False
+                            "has_terms": True,
+                            "has_primitives": False,
+                            "has_instances": False
                         },
                         {
-                            "name": f"{node}_Child2",
-                            "instance_id": 102,
+                            "name": "U2",
+                            "child_id": 102,
                             "model_name": "child_model_2",
                             "design_ref": design_ref,
-                            "has_children": True
+                            "has_terms": True,
+                            "has_primitives": False,
+                            "has_instances": True
                         }
-                    ]}))
-
-                print(f"📤 Sent children for {node}")
+                    ]
+                }
+                print(f"📤 Sent: {json.dumps(response)}")
+                await websocket.send(json.dumps(response))
+                print(f"📤 Sent children for gui_id {gui_id}")
+            elif request.get("request") == "load_terms":
+                gui_id = request.get("gui_id", 0)
+                print(f"🔍 Load terms for gui_id: {gui_id}")
+                response = {
+                    "response": "terms_response",
+                    "gui_id": gui_id,
+                    "children": [
+                        {"name": "A", "child_id": 1, "direction": 0, "msb": None, "lsb": None},
+                        {"name": "B", "child_id": 2, "direction": 1, "msb": None, "lsb": None},
+                        {"name": "BUS", "child_id": 3, "direction": 2, "msb": 3, "lsb": 0}
+                    ]
+                }
+                print(f"📤 Sent: {json.dumps(response)}")
+                await websocket.send(json.dumps(response))
+            elif request.get("request") == "load_equipotential":
+                response = {
+                    "response": "equipotential_response",
+                    "terms": [],
+                    "occurrences": []
+                }
+                print(f"📤 Sent: {json.dumps(response)}")
+                await websocket.send(json.dumps(response))
 
     except websockets.exceptions.ConnectionClosed as e:
         print(f"🔴 Client disconnected: {e}")

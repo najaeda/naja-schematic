@@ -10,11 +10,16 @@ struct Transform {
     ImVec2 screenOrigin = ImVec2(0,0);
 };
 
-class NetRenderer {
+class SchematicView {
 public:
+
     std::vector<InstanceShape> instances;
     std::vector<NetWire> nets;
     Transform transform;
+
+    float minScale = 0.1f;
+    float maxScale = 6.0f;
+    bool showGrid = true;
 
     // Coordinate conversions
     ImVec2 worldToScreen(const ImVec2& world, const ImVec2& canvasPos, const ImVec2& canvasSize) const;
@@ -29,6 +34,11 @@ public:
     // Port absolute position in world coords
     ImVec2 portWorldPos(const InstanceShape& inst, const Port& port) const;
 
+    // Interaction + view helpers
+    void handleInteraction(const ImVec2& canvasPos, const ImVec2& canvasSize);
+    void requestFit(bool resetInteraction = false);
+    void updateFitIfNeeded(const ImVec2& canvasPos, const ImVec2& canvasSize, float padding = 40.0f);
+
     // Draw helpers (const)
     void drawInstance(ImDrawList* dl, const InstanceShape& inst,
                       const ImVec2& canvasPos, const ImVec2& canvasSize) const;
@@ -37,4 +47,11 @@ public:
 
     // Main render entry (parameters by const reference)
     void render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2& canvasSize);
+
+private:
+    bool needsFit_ = true;
+    bool hasUserInteraction_ = false;
+
+    bool computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const;
+    void fitToContents(const ImVec2& canvasPos, const ImVec2& canvasSize, float padding);
 };

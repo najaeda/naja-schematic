@@ -103,6 +103,7 @@ struct Port {
     std::string name;
     float lx = 0.0f;    // normalized local x (-0.5..0.5)
     float ly = 0.0f;    // normalized local y (-0.5..0.5)
+    Direction direction = Direction::Inout; // logical direction for geometry
     bool isInput = false; // used by renderer to pick red/green
     ImU32 color = 0;      // optional explicit color override (0 == no override)
 };
