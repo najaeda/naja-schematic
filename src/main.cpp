@@ -249,7 +249,7 @@ int main() {
   try {
     setupWebsocket();
   } catch (const std::exception& e) {
-    Console::Error("Error setting up WebSocket: " + std::string(e.what()));
+    Console::Error("Error setting up WxebSocket: " + std::string(e.what()));
   }
 
   emscripten_set_main_loop(mainLoop, 0, true);
