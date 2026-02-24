@@ -12,6 +12,7 @@ struct Transform {
 
 class SchematicView {
 public:
+    void zoomBy(float factor);
 
     std::vector<InstanceShape> instances;
     std::vector<NetWire> nets;

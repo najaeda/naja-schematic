@@ -207,6 +207,18 @@ void mainLoopInternal() {
       }
       ImGui::EndMenu();
     }
+    if (ImGui::BeginMenu("View")) {
+      if (ImGui::MenuItem("Zoom In", "Ctrl++")) {
+        EquipotentialView::zoomIn();
+      }
+      if (ImGui::MenuItem("Zoom Out", "Ctrl+-")) {
+        EquipotentialView::zoomOut();
+      }
+      if (ImGui::MenuItem("Fit", "Ctrl+0")) {
+        EquipotentialView::fitView();
+      }
+      ImGui::EndMenu();
+    }
     ImGui::EndMainMenuBar();
   }
 

@@ -129,31 +129,36 @@ void SchematicView::drawNet(ImDrawList* dl, const NetWire& net, const ImVec2& ca
     ImVec2 dstWorld = portWorldPos(*dstInst, *dstPort);
     ImVec2 srcScreen = worldToScreen(srcWorld, canvasPos, canvasSize);
     ImVec2 dstScreen = worldToScreen(dstWorld, canvasPos, canvasSize);
+    float portRadius = std::max(4.0f, 6.0f * transform.scale);
+    // All port triangles point right: connect to triangle tip.
+    ImVec2 srcTip = ImVec2(srcScreen.x + portRadius, srcScreen.y);
+    ImVec2 dstTip = ImVec2(dstScreen.x + portRadius, dstScreen.y);
 
     const float stub = std::max(12.0f, 18.0f * transform.scale);
     float srcDir = (srcPort->lx < 0.0f) ? -1.0f : 1.0f;
     float dstDir = (dstPort->lx < 0.0f) ? -1.0f : 1.0f;
 
-    ImVec2 p0 = srcScreen;
+    ImVec2 p0 = srcTip;
     ImVec2 p1 = ImVec2(srcScreen.x + stub * srcDir, srcScreen.y);
     ImVec2 p4 = ImVec2(dstScreen.x - stub * dstDir, dstScreen.y);
     float midX = (p1.x + p4.x) * 0.5f;
     ImVec2 p2 = ImVec2(midX, p1.y);
     ImVec2 p3 = ImVec2(midX, p4.y);
-    ImVec2 p5 = dstScreen;
+    ImVec2 p5 = dstTip;
 
-    std::vector<ImVec2> points = {p0, p1, p2, p3, p4, p5};
+    std::array<ImVec2, 6> points = {p0, p1, p2, p3, p4, p5};
     ImU32 col = net.color;
     float thickness = std::max(1.0f, 2.0f * transform.scale);
 
-    // Shadow / glow
-    dl->AddPolyline(points.data(), static_cast<int>(points.size()), IM_COL32(0,0,0,80), 0, thickness + 2.0f);
-    // Main manhattan path
-    dl->AddPolyline(points.data(), static_cast<int>(points.size()), col, 0, thickness);
+    // Draw segments individually to keep thickness consistent at joints.
+    for (size_t i = 0; i + 1 < points.size(); ++i) {
+        dl->AddLine(points[i], points[i + 1], IM_COL32(0,0,0,80), thickness + 2.0f);
+        dl->AddLine(points[i], points[i + 1], col, thickness);
+    }
 
     // Endpoints highlight
-    dl->AddCircleFilled(srcScreen, 3.0f + transform.scale, IM_COL32(255,255,255,200));
-    dl->AddCircleFilled(dstScreen, 3.0f + transform.scale, IM_COL32(255,255,255,200));
+    dl->AddCircleFilled(srcTip, 3.0f + transform.scale, IM_COL32(255,255,255,200));
+    dl->AddCircleFilled(dstTip, 3.0f + transform.scale, IM_COL32(255,255,255,200));
 }
 
 // Main render entry
@@ -195,6 +200,10 @@ void SchematicView::fitToContents(const ImVec2& /*canvasPos*/, const ImVec2& can
     // With screenOrigin at (0,0), offset is the world-space top-left of the screen.
     transform.offset.x = boundsMin.x - padX / transform.scale;
     transform.offset.y = boundsMin.y - padY / transform.scale;
+}
+
+void SchematicView::zoomBy(float factor) {
+    transform.scale = clampf(transform.scale * factor, minScale, maxScale);
 }
 
 void SchematicView::requestFit(bool resetInteraction) {

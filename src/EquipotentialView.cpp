@@ -7,6 +7,20 @@
 #include "SchematicView.h"
 
 static SchematicView g_schematic;
+static int g_pendingZoomSteps = 0;
+static bool g_pendingFit = false;
+
+void EquipotentialView::zoomIn() {
+    g_pendingZoomSteps += 1;
+}
+
+void EquipotentialView::zoomOut() {
+    g_pendingZoomSteps -= 1;
+}
+
+void EquipotentialView::fitView() {
+    g_pendingFit = true;
+}
 
 namespace {
 
@@ -41,6 +55,18 @@ void EquipotentialView::render(Equipotential* equipotential) {
     ImVec2 canvasPos = ImGui::GetItemRectMin();
 
     g_schematic.handleInteraction(canvasPos, canvasSize);
+    if (g_pendingZoomSteps != 0) {
+        int steps = g_pendingZoomSteps;
+        g_pendingZoomSteps = 0;
+        float factor = (steps > 0) ? 1.1f : 0.9f;
+        for (int i = 0; i < std::abs(steps); ++i) {
+            g_schematic.zoomBy(factor);
+        }
+    }
+    if (g_pendingFit) {
+        g_pendingFit = false;
+        g_schematic.requestFit(true);
+    }
 
     // --- Populate renderer instances/nets from equipotential terms + occurrences ---
     // Rebuild renderer contents each frame from the current equipotential.
