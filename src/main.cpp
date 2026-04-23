@@ -228,56 +228,107 @@ void mainLoopInternal() {
                                   ImGuiWindowFlags_NoMove |
                                   ImGuiWindowFlags_NoCollapse |
                                   ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                  ImGuiWindowFlags_NoNavFocus;
+                                  ImGuiWindowFlags_NoNavFocus |
+                                  ImGuiWindowFlags_NoScrollbar |
+                                  ImGuiWindowFlags_NoScrollWithMouse;
 
   float menuBarHeight = ImGui::GetFrameHeight();
   ImGui::SetNextWindowPos(ImVec2(0, menuBarHeight));
   ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y - menuBarHeight));
   ImGui::Begin("MainWindow", nullptr, window_flags);
   {
-    // === Resizable Left Panel ===
-    static float leftWidth = 300.0f;
-    float minWidth = 150.0f;
-    float maxWidth = io.DisplaySize.x - 150.0f;
+    static float leftWidthTop    = 300.0f;
+    static float leftWidthBottom = 300.0f;
+    static float schematicHeight = -1.0f;
+    const float minPanelW = 0.0f;
+    const float maxPanelW = io.DisplaySize.x - 100.0f;
+    const float minPanelH = 40.0f;
+    float totalH = ImGui::GetContentRegionAvail().y;
+    if (schematicHeight < 0.0f) schematicHeight = totalH * 0.65f;
 
-    // --- Left Panel ---
-    ImGui::BeginChild("LeftPanel", ImVec2(leftWidth, 0), true);
+    // Helper: draw a vertical splitter and adjust the given width
+    auto vSplitter = [&](const char* id, float& width) {
+      ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f,0.3f,0.3f,0.5f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.2f,0.2f,0.2f,0.5f));
+      ImGui::Button(id, ImVec2(4.0f, -1));
+      ImGui::PopStyleColor(3);
+      if (ImGui::IsItemActive()) {
+        width += ImGui::GetIO().MouseDelta.x;
+        if (width < minPanelW) width = minPanelW;
+        if (width > maxPanelW) width = maxPanelW;
+      }
+      if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    };
+
+    // === Top row: tree | vsplitter | schematic ===
+    ImGui::BeginChild("SchematicRow", ImVec2(0, schematicHeight), false,
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     {
-      ImGui::Text("Netlist Hierarchy");
-      ImGui::Separator();
-
-      ImGui::BeginChild("TreeScroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+      ImGui::BeginChild("TreePanel", ImVec2(leftWidthTop, 0), true);
       {
-        Console::Log(guiData->getString());
-        if (guiData->netlist_ && connected) {
-          guiData->netlist_->render();
-        } else {
-          ImGui::Text("Root node not loaded yet...");
+        ImGui::Text("Netlist Hierarchy");
+        ImGui::Separator();
+        ImGui::BeginChild("TreeScroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+        {
+          Console::Log(guiData->getString());
+          if (guiData->netlist_ && connected) {
+            guiData->netlist_->render();
+          } else {
+            ImGui::Text("Root node not loaded yet...");
+          }
         }
+        ImGui::EndChild();
+      }
+      ImGui::EndChild();
+
+      vSplitter("##VSplitTop", leftWidthTop);
+
+      ImGui::SameLine();
+      ImGui::BeginChild("SchematicPanel", ImVec2(0, 0), true,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+      {
+        EquipotentialView::renderSchematic(guiData->equipotential_);
       }
       ImGui::EndChild();
     }
     ImGui::EndChild();
 
-    // --- Splitter ---
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0,0,0,0));
+    // === Horizontal splitter ===
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f,0.3f,0.3f,0.5f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f,0.2f,0.2f,0.5f));
-    ImGui::Button("##Splitter", ImVec2(4.0f, -1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.2f,0.2f,0.2f,0.5f));
+    ImGui::Button("##HSplitter", ImVec2(-1, 4.0f));
     ImGui::PopStyleColor(3);
-
     if (ImGui::IsItemActive()) {
-      leftWidth += ImGui::GetIO().MouseDelta.x;
-      if (leftWidth < minWidth) leftWidth = minWidth;
-      if (leftWidth > maxWidth) leftWidth = maxWidth;
+      schematicHeight += ImGui::GetIO().MouseDelta.y;
+      float maxH = totalH - minPanelH - 4.0f;
+      if (schematicHeight < minPanelH) schematicHeight = minPanelH;
+      if (schematicHeight > maxH)      schematicHeight = maxH;
     }
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+      ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
 
-    // --- Main Panel ---
-    ImGui::SameLine();
-    ImGui::BeginChild("MainView", ImVec2(0, 0), true);
+    // === Bottom row: left panel | vsplitter | table ===
+    ImGui::BeginChild("TableRow", ImVec2(0, 0), false,
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     {
-      EquipotentialView::render(guiData->equipotential_);
+      if (leftWidthBottom > 0.0f) {
+        ImGui::BeginChild("TableLeftPanel", ImVec2(leftWidthBottom, 0), true);
+        ImGui::EndChild();
+      }
+
+      vSplitter("##VSplitBottom", leftWidthBottom);
+
+      ImGui::SameLine();
+      ImGui::BeginChild("TablePanel", ImVec2(0, 0), true,
+        ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_HorizontalScrollbar);
+      {
+        EquipotentialView::renderTable(guiData->equipotential_);
+      }
+      ImGui::EndChild();
     }
     ImGui::EndChild();
   }

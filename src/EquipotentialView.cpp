@@ -1,6 +1,7 @@
 // EquipotentialView.cpp
 #include "EquipotentialView.h"
 
+#include <algorithm>
 #include <imgui.h>
 
 #include "Types.h"
@@ -44,17 +45,37 @@ ImColor getInstTermOccurrenceColor(Direction direction) {
 
 } // anonymous namespace
 
-void EquipotentialView::render(Equipotential* equipotential) {
-    ImVec2 canvasSize = ImGui::GetContentRegionAvail();
-    if (canvasSize.x < 10.0f) canvasSize.x = 10.0f;
-    if (canvasSize.y < 10.0f) canvasSize.y = 10.0f;
+void EquipotentialView::renderSchematic(Equipotential* equipotential) {
+    const float scrollSz = ImGui::GetFrameHeight();
+    ImVec2 availSize = ImGui::GetContentRegionAvail();
+    ImVec2 canvasSize = ImVec2(std::max(10.0f, availSize.x - scrollSz),
+                               std::max(10.0f, availSize.y - scrollSz));
 
-    ImGui::InvisibleButton("net_canvas", canvasSize,
-                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+    // cursorStart is in SchematicPanel's coordinate space.
+    // We need it for placing the slider strips after the canvas child ends.
+    ImVec2 cursorStart = ImGui::GetCursorPos();
+
+    // ---------------------------------------------------------------
+    // Canvas in its own child window.
+    // ImGui manages this child's clip rect independently of the shared
+    // parent draw list, so zoomed/panned draw-list operations can never
+    // bleed into the table panel below.
+    // ---------------------------------------------------------------
+    ImGui::BeginChild("##SchematicCanvas", canvasSize, false,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    // Use the content size reported from *inside* the child (handles any
+    // implicit padding differences between ImGui versions).
+    ImVec2 innerSize = ImGui::GetContentRegionAvail();
+
+    ImGui::InvisibleButton("net_canvas", innerSize,
+                           ImGuiButtonFlags_MouseButtonLeft |
+                           ImGuiButtonFlags_MouseButtonRight |
+                           ImGuiButtonFlags_MouseButtonMiddle);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 canvasPos = ImGui::GetItemRectMin();
 
-    g_schematic.handleInteraction(canvasPos, canvasSize);
+    g_schematic.handleInteraction(canvasPos, innerSize);
     if (g_pendingZoomSteps != 0) {
         int steps = g_pendingZoomSteps;
         g_pendingZoomSteps = 0;
@@ -68,13 +89,9 @@ void EquipotentialView::render(Equipotential* equipotential) {
         g_schematic.requestFit(true);
     }
 
-    // --- Populate renderer instances/nets from equipotential terms + occurrences ---
-    // Rebuild renderer contents each frame from the current equipotential.
-    // For each term and each occurrence we create one InstanceShape (square) and one Port associated with it.
     g_schematic.instances.clear();
     g_schematic.nets.clear();
 
-    // Quick debug overlay: show counts so we can see if equipotential is present
     if (!equipotential) {
         dl->AddText(ImVec2(canvasPos.x + 8.0f, canvasPos.y + 8.0f), IM_COL32(255, 100, 100, 255), "");
     } else {
@@ -83,7 +100,6 @@ void EquipotentialView::render(Equipotential* equipotential) {
     }
 
     if (equipotential) {
-        // Layout parameters
         const float leftMargin = 20.0f;
         const float columnGap = 120.0f;
         const float rowSpacing = 24.0f;
@@ -93,7 +109,6 @@ void EquipotentialView::render(Equipotential* equipotential) {
         int nextInstanceId = 1;
         int nextPortId = 1;
 
-        // Keep a list of (instanceId, portId) for all created ports so we can connect them to the same net
         struct PortRef { int instanceId; int portId; };
         std::vector<PortRef> allPortRefs;
         allPortRefs.reserve(equipotential->terms.size() + equipotential->occurrences.size());
@@ -144,13 +159,13 @@ void EquipotentialView::render(Equipotential* equipotential) {
         }
 
         const size_t totalItems = drivers.size() + receivers.size();
-        if (totalItems < 64 /*Error out otherwise*/) {
+        if (totalItems < 64) {
             const float columnWidth = instW;
             const float rightColumnX = leftMargin + columnWidth + columnGap;
             const float leftColumnX = leftMargin;
             const float maxRows = static_cast<float>(std::max(drivers.size(), receivers.size()));
             const float totalHeight = (maxRows * instH) + ((maxRows > 0 ? (maxRows - 1) : 0) * rowSpacing);
-            const float startY = (canvasSize.y - totalHeight) * 0.5f;
+            const float startY = (innerSize.y - totalHeight) * 0.5f;
 
             auto addItem = [&](const Item& item, float x, float y) {
                 InstanceShape inst;
@@ -194,15 +209,12 @@ void EquipotentialView::render(Equipotential* equipotential) {
             }
         }
 
-        // --- Connect all ports to the same net (star topology) ---
-        // If there are at least two ports, choose the first port as the hub and create nets from hub to every other port.
         if (allPortRefs.size() >= 2) {
             const PortRef hub = allPortRefs.front();
             for (size_t i = 1; i < allPortRefs.size(); ++i) {
                 const PortRef& other = allPortRefs[i];
                 NetWire n;
                 n.id = static_cast<int>(g_schematic.nets.size()) + 1;
-                // connect hub -> other (direction is visual only)
                 n.srcInstance = hub.instanceId;
                 n.srcPortId = hub.portId;
                 n.dstInstance = other.instanceId;
@@ -221,11 +233,42 @@ void EquipotentialView::render(Equipotential* equipotential) {
         g_schematic.requestFit(true);
         lastTotalItems = currentTotalItems;
     }
-    g_schematic.updateFitIfNeeded(canvasPos, canvasSize, 60.0f);
+    g_schematic.updateFitIfNeeded(canvasPos, innerSize, 60.0f);
+    g_schematic.render(dl, canvasPos, innerSize);
 
-    // Render the netlist canvas (instances + ports + nets)
-    g_schematic.render(dl, canvasPos, canvasSize);
+    ImGui::EndChild(); // ##SchematicCanvas
+    // ---------------------------------------------------------------
+    // Back in SchematicPanel. Place the scrollbar sliders in the strips
+    // that were reserved around the canvas child.
+    // ---------------------------------------------------------------
 
+    ImVec2 wMin(-500.0f, -500.0f), wMax(500.0f, 500.0f);
+    const float pad = 120.0f;
+    if (g_schematic.computeWorldBounds(wMin, wMax)) {
+        wMin.x -= pad; wMin.y -= pad;
+        wMax.x += pad; wMax.y += pad;
+    }
+
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, 24.0f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,          ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab,        ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive,  ImVec4(0.65f, 0.65f, 0.65f, 1.0f));
+
+    // Vertical slider — right strip
+    ImGui::SetCursorPos(ImVec2(cursorStart.x + canvasSize.x, cursorStart.y));
+    ImGui::VSliderFloat("##VScroll", ImVec2(scrollSz, canvasSize.y),
+                        &g_schematic.transform.offset.y, wMax.y, wMin.y, "");
+
+    // Horizontal slider — bottom strip
+    ImGui::SetCursorPos(ImVec2(cursorStart.x, cursorStart.y + canvasSize.y));
+    ImGui::SetNextItemWidth(canvasSize.x);
+    ImGui::SliderFloat("##HScroll", &g_schematic.transform.offset.x, wMin.x, wMax.x, "");
+
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
+}
+
+void EquipotentialView::renderTable(Equipotential* equipotential) {
     // --- Table: show top-level terms first, then occurrences ---
     if (ImGui::BeginTable("equipotential_table", 4,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))

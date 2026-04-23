@@ -49,10 +49,11 @@ public:
     // Main render entry (parameters by const reference)
     void render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2& canvasSize);
 
+    bool computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const;
+
 private:
     bool needsFit_ = true;
     bool hasUserInteraction_ = false;
 
-    bool computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const;
     void fitToContents(const ImVec2& canvasPos, const ImVec2& canvasSize, float padding);
 };

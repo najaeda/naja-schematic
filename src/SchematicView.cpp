@@ -294,6 +294,8 @@ void SchematicView::handleInteraction(const ImVec2& canvasPos, const ImVec2& /*c
 }
 
 void SchematicView::render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    dl->PushClipRect(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), true);
+
     // Draw background grid
     if (showGrid) {
         const ImU32 gridCol = IM_COL32(60, 60, 60, 80);
@@ -325,4 +327,6 @@ void SchematicView::render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2
     for (const auto& inst : instances) {
         drawInstance(dl, inst, canvasPos, canvasSize);
     }
+
+    dl->PopClipRect();
 }
