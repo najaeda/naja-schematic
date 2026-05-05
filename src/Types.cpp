@@ -28,7 +28,7 @@ void from_json(const json& j, InstanceResponseJson& r) {
   if (j.contains("model_name") && !j["model_name"].is_null())
     r.model_name = j["model_name"].get<std::string>();
 
-  j.at("child_id").get_to(r.child_id);
+  r.child_id = j.value("child_id", 0u);
   j.at("design_ref").get_to(r.design_ref);
   j.at("has_primitives").get_to(r.has_primitives);
   j.at("has_instances").get_to(r.has_instances);

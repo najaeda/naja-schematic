@@ -3,7 +3,7 @@
 #include <imgui.h>
 
 #include "Console.h"
-#include "WebSocketClient.h"
+#include "INetlistProvider.h"
 
 void NetlistTree::createRootNode(
   const std::string& name,
@@ -185,7 +185,7 @@ void NetlistTreeGroupNode::sendLoadRequest() const {
         std::to_string(designRef.design_id) +
         R"(}})";
   Console::Log("Sending load request: " + request);
-  getTree()->getWebSocketClient()->send(request);
+  getTree()->getProvider()->send(request);
 }
 
 NetlistTreeTermNode::NetlistTreeTermNode(

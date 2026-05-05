@@ -7,7 +7,7 @@
 #include "Types.h"
 
 class NetlistTreeNode;
-class WebSocketClient;
+class INetlistProvider;
 
 
 class NetlistTree {
@@ -19,7 +19,7 @@ class NetlistTree {
     };
     using Path = std::vector<unsigned>;
     using NodesMap = std::map<unsigned, NetlistTreeNode*>;
-    NetlistTree(const WebSocketClient* ws): ws_(ws) {}
+    NetlistTree(INetlistProvider* provider): ws_(provider) {}
     NetlistTree(const NetlistTree&) = delete;
     NetlistTree& operator=(const NetlistTree&) = delete;
 
@@ -33,12 +33,12 @@ class NetlistTree {
     NetlistTreeNode* getNode(unsigned id) const;
     NetlistTreeNode* getRoot() const { return root_; }
     void sendLoadEquipotential(const Path& path, const TermID& termID) const;
-    const WebSocketClient* getWebSocketClient() const { return ws_; }
+    INetlistProvider* getProvider() const { return ws_; }
 
     void render();
     void insertNodeInMap(NetlistTreeNode* node);
   private:
-    const WebSocketClient*  ws_         {nullptr};
+    INetlistProvider*  ws_         {nullptr};
     NetlistTreeNode*        root_       {nullptr};
     unsigned                nextGUIID_ {0};
     NodesMap                nodes_;

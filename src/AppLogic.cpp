@@ -1,85 +1,76 @@
+#include "AppLogic.h"
+
 #include <iostream>
 
 #include <imgui.h>
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_opengl3.h>
-#include <SDL.h>
 #include <SDL_opengl.h>
-#include <emscripten.h>
 
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
+#include "INetlistProvider.h"
 #include "NetlistTree.h"
 #include "GUIData.h"
 #include "Types.h"
 #include "Console.h"
-#include "WebSocketClient.h"
 #include "EquipotentialView.h"
 
-WebSocketClient* ws;
-bool connected = false;
+// ---------------------------------------------------------------------------
+// Provider setup — identical message dispatch for both WASM and native modes.
+// ---------------------------------------------------------------------------
 
-SDL_Window* window;
-SDL_GLContext gl_context;
-GUIData* guiData;
+void setupProvider(AppState& state) {
+  state.guiData->netlist_ = new NetlistTree(state.provider);
 
-void setupWebsocket() {
-  ws = new WebSocketClient("ws://localhost:8081/ws");
-  guiData->netlist_ = new NetlistTree(ws);
-
-  ws->on_open([&]() {
-    connected = true;
-    Console::Log("✅ Connected to backend");
-    ws->send(R"({"request":"load_root"})");
+  state.provider->on_open([&state]() {
+    state.connected = true;
+    Console::Log("Connected to netlist provider");
+    state.provider->send(R"({"request":"load_root"})");
   });
 
-  ws->on_message([&](const std::string& msg) {
-    Console::Log("📩 Message received: " + msg);
+  state.provider->on_message([&state](const std::string& msg) {
+    Console::Log("Message received: " + msg);
     std::string clean = msg;
     auto nullPos = clean.find('\0');
-    if (nullPos != std::string::npos) {
-      clean.resize(nullPos);
-    }
-    while (!clean.empty() && (clean.back() == '\n' || clean.back() == '\r' || clean.back() == ' ' || clean.back() == '\t')) {
+    if (nullPos != std::string::npos) clean.resize(nullPos);
+    while (!clean.empty() &&
+           (clean.back() == '\n' || clean.back() == '\r' ||
+            clean.back() == ' '  || clean.back() == '\t')) {
       clean.pop_back();
     }
+
     json j;
     try {
       j = json::parse(clean);
     } catch (const std::exception& e) {
-      Console::Error("Failed to parse JSON message: " + std::string(e.what()));
+      Console::Error("Failed to parse JSON: " + std::string(e.what()));
       return;
     }
+
     std::string resp = j.value("response", "");
     if (resp.empty()) {
-      Console::Error("Missing response field in message.");
+      Console::Error("Missing response field.");
+      return;
     }
+
     if (resp == "root_response" || resp == "root_loaded") {
-      Console::Log("✅ Root node data received");
+      Console::Log("Root node data received");
       const auto& root = j["root"];
       if (root.contains("has_terms") || root.contains("has_primitives") || root.contains("has_instances")) {
         InstanceResponseJson data = root.get<InstanceResponseJson>();
-        guiData->netlist_->createRootNode(
-          data.name,
-          data.design_ref,
-          data.has_terms,
-          data.has_primitives,
-          data.has_instances
-        );
+        state.guiData->netlist_->createRootNode(
+          data.name, data.design_ref,
+          data.has_terms, data.has_primitives, data.has_instances);
       } else {
         DesignRef designRef{};
         if (root.contains("design_ref")) {
           designRef = root["design_ref"].get<DesignRef>();
         }
-        const bool hasChildren = root.value("has_children", false);
-        guiData->netlist_->createRootNode(
+        state.guiData->netlist_->createRootNode(
           root.value("name", std::string("<unnamed root>")),
-          designRef,
-          false,
-          false,
-          hasChildren
-        );
+          designRef, false, false, root.value("has_children", false));
       }
     } else if (resp == "instances_response" || resp == "primitives_response" || resp == "children_loaded") {
       unsigned gui_id = 0;
@@ -90,106 +81,84 @@ void setupWebsocket() {
         if (rawChildren.is_array()) {
           for (const auto& child : rawChildren) {
             InstanceResponseJson item;
-            item.name = child.value("name", "");
+            item.name       = child.value("name", "");
             item.model_name = child.value("model_name", "");
-            item.child_id = child.value("instance_id", 0);
-            if (child.contains("design_ref")) {
+            item.child_id   = child.value("instance_id", 0);
+            if (child.contains("design_ref"))
               item.design_ref = child["design_ref"].get<DesignRef>();
-            }
-            bool hasChildren = child.value("has_children", false);
-            item.has_terms = false;
+            bool hasChildren   = child.value("has_children", false);
+            item.has_terms     = false;
             item.has_primitives = false;
-            item.has_instances = hasChildren;
+            item.has_instances  = hasChildren;
             children.push_back(std::move(item));
           }
         }
       } else {
         InstancesResponseJson data = j.get<InstancesResponseJson>();
-        gui_id = data.gui_id;
+        gui_id   = data.gui_id;
         children = std::move(data.children);
       }
-      auto parent = guiData->netlist_->getNode(gui_id);
+      auto parent = state.guiData->netlist_->getNode(gui_id);
       if (!parent) {
         Console::Error("Cannot find node: " + std::to_string(gui_id));
         return;
       }
       if (parent->hasChildren()) {
-        Console::Error("internal error");
+        Console::Error("internal error: node already has children");
+        return;
       }
       parent->createChildren();
-      for (auto instance: children) {
+      for (auto& instance : children) {
         parent->createInstanceNode(
-          instance.name,
-          instance.child_id,
-          instance.design_ref,
-          instance.has_terms,
-          instance.has_primitives,
-          instance.has_instances
-        );
+          instance.name, instance.child_id, instance.design_ref,
+          instance.has_terms, instance.has_primitives, instance.has_instances);
       }
     } else if (resp == "terms_response") {
       TermsResponseJson data = j.get<TermsResponseJson>();
-      auto parent = guiData->netlist_->getNode(data.gui_id);
+      auto parent = state.guiData->netlist_->getNode(data.gui_id);
       if (!parent) {
         Console::Error("Cannot find node: " + std::to_string(data.gui_id));
         return;
       }
       if (parent->hasChildren()) {
-        Console::Error("internal error");
+        Console::Error("internal error: node already has children");
+        return;
       }
       parent->createChildren();
-      for (auto term: data.children) {
-        auto direction = Direction(term.direction);
-        parent->createTermNode(term.name, term.child_id, direction, term.msb, term.lsb);
+      for (auto& term : data.children) {
+        parent->createTermNode(term.name, term.child_id,
+                               Direction(term.direction), term.msb, term.lsb);
       }
     } else if (resp == "equipotential_response") {
-      Console::Log("✅ Equipotential data received");
-      Equipotential equipotential = j.get<Equipotential>();
-      guiData->equipotential_ = new Equipotential(equipotential);
-      //auto terms = j["terms"];
-      //for (const auto& termJson : terms) {
-      //  BitTerm term;
-      //  term.name = termJson.value("name", "");
-      //  term.child_id = termJson.value("child_id", 0);
-      //  char dirChar = termJson.value("direction", 'I');
-      //  switch (dirChar) {
-      //    case 'I':
-      //      term.direction = Direction::Input;
-      //      break;
-      //    case 'O':
-      //      term.direction = Direction::Output;
-      //      break;
-      //    case 'B':
-      //      term.direction = Direction::Inout;
-      //      break;
-      //    default:
-      //      term.direction = Direction::Input;
-      //      break;
-      //  }
-      //  term.bit = termJson.value("bit", std::optional<int>{});
-      //  equipotential.addTerm(term);
-      //}
-      // Handle equipotential data here
+      Console::Log("Equipotential data received");
+      state.guiData->equipotential_ = new Equipotential(j.get<Equipotential>());
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
     }
   });
 
-  ws->on_error([&](const std::string& err) {
-    Console::Error("⚠️ WebSocket error: " + err);
+  state.provider->on_error([](const std::string& err) {
+    Console::Error("Provider error: " + err);
   });
 
-  ws->on_close([&]() {
-    Console::Error("❌ Connection closed");
+  state.provider->on_close([]() {
+    Console::Error("Provider connection closed");
   });
+
+  state.provider->start();
 }
 
-void mainLoopInternal() {
+// ---------------------------------------------------------------------------
+// Per-frame rendering — identical for both WASM and native entry points.
+// ---------------------------------------------------------------------------
+
+bool appFrame(AppState& state) {
   SDL_Event event;
+  bool quit = false;
   while (SDL_PollEvent(&event)) {
     ImGui_ImplSDL2_ProcessEvent(&event);
     if (event.type == SDL_QUIT) {
-      //done = true;
+      quit = true;
     }
   }
 
@@ -197,40 +166,72 @@ void mainLoopInternal() {
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplSDL2_NewFrame();
   ImGui::NewFrame();
-  
 
   // ==== Top Menu Bar ====
+  static bool openDialogVisible = false;
+  static char openPathBuf[1024] = {};
+
   if (ImGui::BeginMainMenuBar()) {
     if (ImGui::BeginMenu("File")) {
+      if (ImGui::MenuItem("Open...", "Ctrl+O")) {
+        openDialogVisible = true;
+        openPathBuf[0] = '\0';
+      }
       if (ImGui::MenuItem("About")) {
         std::cout << "About clicked" << std::endl;
       }
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-      if (ImGui::MenuItem("Zoom In", "Ctrl++")) {
-        EquipotentialView::zoomIn();
-      }
-      if (ImGui::MenuItem("Zoom Out", "Ctrl+-")) {
-        EquipotentialView::zoomOut();
-      }
-      if (ImGui::MenuItem("Fit", "Ctrl+0")) {
-        EquipotentialView::fitView();
-      }
+      if (ImGui::MenuItem("Zoom In",  "Ctrl++")) EquipotentialView::zoomIn();
+      if (ImGui::MenuItem("Zoom Out", "Ctrl+-")) EquipotentialView::zoomOut();
+      if (ImGui::MenuItem("Fit",      "Ctrl+0")) EquipotentialView::fitView();
       ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
   }
 
-    // === UI ===
-  ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar |
-                                  ImGuiWindowFlags_NoResize |
-                                  ImGuiWindowFlags_NoMove |
-                                  ImGuiWindowFlags_NoCollapse |
-                                  ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                  ImGuiWindowFlags_NoNavFocus |
-                                  ImGuiWindowFlags_NoScrollbar |
-                                  ImGuiWindowFlags_NoScrollWithMouse;
+  // Ctrl+O shortcut
+  if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
+    openDialogVisible = true;
+    openPathBuf[0] = '\0';
+  }
+
+  // ==== Open file dialog ====
+  if (openDialogVisible) {
+    ImGui::OpenPopup("Open Netlist");
+    openDialogVisible = false;
+  }
+  ImGui::SetNextWindowSize(ImVec2(500, 0), ImGuiCond_Always);
+  if (ImGui::BeginPopupModal("Open Netlist", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("Netlist file path:");
+    ImGui::SetNextItemWidth(-1);
+    bool confirmed = ImGui::InputText("##path", openPathBuf, sizeof(openPathBuf),
+                                      ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::Spacing();
+    if (ImGui::Button("Open", ImVec2(120, 0)) || confirmed) {
+      std::string path(openPathBuf);
+      if (!path.empty()) {
+        state.provider->loadFile(path);
+        delete state.guiData->netlist_;
+        state.guiData->netlist_ = new NetlistTree(state.provider);
+        state.provider->send(R"({"request":"load_root"})");
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  // ==== Main layout ====
+  ImGuiWindowFlags window_flags =
+    ImGuiWindowFlags_NoTitleBar     | ImGuiWindowFlags_NoResize   |
+    ImGuiWindowFlags_NoMove         | ImGuiWindowFlags_NoCollapse |
+    ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
+    ImGuiWindowFlags_NoScrollbar    | ImGuiWindowFlags_NoScrollWithMouse;
 
   float menuBarHeight = ImGui::GetFrameHeight();
   ImGui::SetNextWindowPos(ImVec2(0, menuBarHeight));
@@ -240,13 +241,12 @@ void mainLoopInternal() {
     static float leftWidthTop    = 300.0f;
     static float leftWidthBottom = 300.0f;
     static float schematicHeight = -1.0f;
-    const float minPanelW = 0.0f;
-    const float maxPanelW = io.DisplaySize.x - 100.0f;
-    const float minPanelH = 40.0f;
+    const float  minPanelW = 0.0f;
+    const float  maxPanelW = io.DisplaySize.x - 100.0f;
+    const float  minPanelH = 40.0f;
     float totalH = ImGui::GetContentRegionAvail().y;
     if (schematicHeight < 0.0f) schematicHeight = totalH * 0.65f;
 
-    // Helper: draw a vertical splitter and adjust the given width
     auto vSplitter = [&](const char* id, float& width) {
       ImGui::SameLine();
       ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
@@ -271,13 +271,14 @@ void mainLoopInternal() {
       {
         ImGui::Text("Netlist Hierarchy");
         ImGui::Separator();
-        ImGui::BeginChild("TreeScroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+        ImGui::BeginChild("TreeScroll", ImVec2(0, 0), false,
+          ImGuiWindowFlags_HorizontalScrollbar);
         {
-          Console::Log(guiData->getString());
-          if (guiData->netlist_ && connected) {
-            guiData->netlist_->render();
+          Console::Log(state.guiData->getString());
+          if (state.guiData->netlist_ && state.connected) {
+            state.guiData->netlist_->render();
           } else {
-            ImGui::Text("Root node not loaded yet...");
+            ImGui::Text("Connecting to netlist provider...");
           }
         }
         ImGui::EndChild();
@@ -290,7 +291,7 @@ void mainLoopInternal() {
       ImGui::BeginChild("SchematicPanel", ImVec2(0, 0), true,
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
       {
-        EquipotentialView::renderSchematic(guiData->equipotential_);
+        EquipotentialView::renderSchematic(state.guiData->equipotential_);
       }
       ImGui::EndChild();
     }
@@ -319,14 +320,12 @@ void mainLoopInternal() {
         ImGui::BeginChild("TableLeftPanel", ImVec2(leftWidthBottom, 0), true);
         ImGui::EndChild();
       }
-
       vSplitter("##VSplitBottom", leftWidthBottom);
-
       ImGui::SameLine();
       ImGui::BeginChild("TablePanel", ImVec2(0, 0), true,
         ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_HorizontalScrollbar);
       {
-        EquipotentialView::renderTable(guiData->equipotential_);
+        EquipotentialView::renderTable(state.guiData->equipotential_);
       }
       ImGui::EndChild();
     }
@@ -334,57 +333,13 @@ void mainLoopInternal() {
   }
   ImGui::End();
 
-  // === RENDER ===
+  // === GL render ===
   ImGui::Render();
   glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
   glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-  SDL_GL_SwapWindow(window);
-}
+  SDL_GL_SwapWindow(state.window);
 
-void mainLoop() {
-  try {
-    mainLoopInternal();
-  } catch (const std::exception& e) {
-    Console::Error("Exception in main loop: " + std::string(e.what()));
-  }
-}
-
-int main() {
-  SDL_Init(SDL_INIT_VIDEO);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-
-  window = SDL_CreateWindow("najaeda Netlist Viewer",
-                            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                            1280, 720, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
-  gl_context = SDL_GL_CreateContext(window);
-  SDL_GL_MakeCurrent(window, gl_context);
-
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO();
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
-  ImGui_ImplOpenGL3_Init("#version 300 es");
-
-  guiData = new GUIData();
-
-  try {
-    setupWebsocket();
-  } catch (const std::exception& e) {
-    Console::Error("Error setting up WxebSocket: " + std::string(e.what()));
-  }
-
-  emscripten_set_main_loop(mainLoop, 0, true);
-
-  // cleanup never reached under emscripten, but left for completeness
-  ImGui_ImplOpenGL3_Shutdown();
-  ImGui_ImplSDL2_Shutdown();
-  ImGui::DestroyContext();
-  SDL_GL_DeleteContext(gl_context);
-  SDL_DestroyWindow(window);
-  SDL_Quit();
-  return 0;
+  return !quit;
 }
