@@ -1,6 +1,7 @@
 #include "AppLogic.h"
 
 #include <iostream>
+#include <sstream>
 
 #include <imgui.h>
 #include <backends/imgui_impl_sdl2.h>
@@ -16,6 +17,11 @@ using json = nlohmann::json;
 #include "Types.h"
 #include "Console.h"
 #include "EquipotentialView.h"
+
+#ifndef __EMSCRIPTEN__
+#include "LocalSNLProvider.h"
+#include "NativeFileDialog.h"
+#endif
 
 // ---------------------------------------------------------------------------
 // Provider setup — identical message dispatch for both WASM and native modes.
@@ -110,7 +116,7 @@ void setupProvider(AppState& state) {
       parent->createChildren();
       for (auto& instance : children) {
         parent->createInstanceNode(
-          instance.name, instance.child_id, instance.design_ref,
+          instance.name, instance.model_name, instance.child_id, instance.design_ref,
           instance.has_terms, instance.has_primitives, instance.has_instances);
       }
     } else if (resp == "terms_response") {
@@ -168,18 +174,25 @@ bool appFrame(AppState& state) {
   ImGui::NewFrame();
 
   // ==== Top Menu Bar ====
-  static bool openDialogVisible = false;
-  static char openPathBuf[1024] = {};
+#ifndef __EMSCRIPTEN__
+  static bool snlDialogOpen = false;
+  static bool vrlDialogOpen = false;
+  static bool svDialogOpen  = false;
+  static char snlPathBuf[1024]    = {};
+  static char vrlFilesBuf[8192]   = {};
+  static char vrlLibertyBuf[4096] = {};
+  static char svFilesBuf[8192]    = {};
+#endif
 
   if (ImGui::BeginMainMenuBar()) {
     if (ImGui::BeginMenu("File")) {
-      if (ImGui::MenuItem("Open...", "Ctrl+O")) {
-        openDialogVisible = true;
-        openPathBuf[0] = '\0';
-      }
-      if (ImGui::MenuItem("About")) {
-        std::cout << "About clicked" << std::endl;
-      }
+#ifndef __EMSCRIPTEN__
+      if (ImGui::MenuItem("Open SNL...",            "")) { snlDialogOpen = true; snlPathBuf[0] = '\0'; }
+      if (ImGui::MenuItem("Open Verilog...",        "")) { vrlDialogOpen = true; vrlFilesBuf[0] = '\0'; vrlLibertyBuf[0] = '\0'; }
+      if (ImGui::MenuItem("Open SystemVerilog...",  "")) { svDialogOpen  = true; svFilesBuf[0]  = '\0'; }
+      ImGui::Separator();
+#endif
+      if (ImGui::MenuItem("About")) { std::cout << "About" << std::endl; }
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
@@ -191,40 +204,129 @@ bool appFrame(AppState& state) {
     ImGui::EndMainMenuBar();
   }
 
-  // Ctrl+O shortcut
-  if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O)) {
-    openDialogVisible = true;
-    openPathBuf[0] = '\0';
+#ifndef __EMSCRIPTEN__
+  // Helper: reset the netlist tree and re-request root after loading
+  auto reloadNetlist = [&]() {
+    delete state.guiData->netlist_;
+    state.guiData->netlist_ = new NetlistTree(state.provider);
+    state.provider->send(R"({"request":"load_root"})");
+  };
+
+  // Helper: split a text buffer into non-empty trimmed lines
+  auto splitLines = [](const char* buf) {
+    std::vector<std::string> out;
+    std::istringstream ss(buf);
+    std::string line;
+    while (std::getline(ss, line)) {
+      auto s = line.find_first_not_of(" \t\r");
+      if (s == std::string::npos) continue;
+      auto e = line.find_last_not_of(" \t\r");
+      out.push_back(line.substr(s, e - s + 1));
+    }
+    return out;
+  };
+
+  // Helper: append paths to a char buffer (newline-separated)
+  auto appendPaths = [](char* buf, size_t bufSize,
+                        const std::vector<std::string>& paths) {
+    for (const auto& p : paths) {
+      size_t cur = strlen(buf);
+      if (cur > 0 && buf[cur - 1] != '\n' && cur + 1 < bufSize)
+        buf[cur++] = '\n';
+      size_t room = bufSize - cur - 1;
+      strncat(buf + cur, p.c_str(), room);
+    }
+  };
+
+  auto* localProvider = dynamic_cast<LocalSNLProvider*>(state.provider);
+
+  // ==== Open SNL dialog ====
+  if (snlDialogOpen) { ImGui::OpenPopup("Open SNL"); snlDialogOpen = false; }
+  ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Always);
+  if (ImGui::BeginPopupModal("Open SNL", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("SNL directory path:");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Browse...##snl")) {
+      auto dir = NativeFileDialog::pickDirectory("Select SNL Directory");
+      if (!dir.empty()) {
+        strncpy(snlPathBuf, dir.c_str(), sizeof(snlPathBuf) - 1);
+        snlPathBuf[sizeof(snlPathBuf) - 1] = '\0';
+      }
+    }
+    ImGui::SetNextItemWidth(-1);
+    bool ok = ImGui::InputText("##snlpath", snlPathBuf, sizeof(snlPathBuf),
+                               ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::Spacing();
+    if ((ImGui::Button("Open", ImVec2(120,0)) || ok) && snlPathBuf[0]) {
+      if (localProvider) { localProvider->loadSNL(snlPathBuf); reloadNetlist(); }
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120,0))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
   }
 
-  // ==== Open file dialog ====
-  if (openDialogVisible) {
-    ImGui::OpenPopup("Open Netlist");
-    openDialogVisible = false;
-  }
-  ImGui::SetNextWindowSize(ImVec2(500, 0), ImGuiCond_Always);
-  if (ImGui::BeginPopupModal("Open Netlist", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("Netlist file path:");
-    ImGui::SetNextItemWidth(-1);
-    bool confirmed = ImGui::InputText("##path", openPathBuf, sizeof(openPathBuf),
-                                      ImGuiInputTextFlags_EnterReturnsTrue);
+  // ==== Open Verilog dialog ====
+  if (vrlDialogOpen) { ImGui::OpenPopup("Open Verilog"); vrlDialogOpen = false; }
+  ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Always);
+  if (ImGui::BeginPopupModal("Open Verilog", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("Verilog source files (one path per line):");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Browse...##vrlsrc")) {
+      auto files = NativeFileDialog::pickFiles("Select Verilog Files", {"v"});
+      appendPaths(vrlFilesBuf, sizeof(vrlFilesBuf), files);
+    }
+    ImGui::InputTextMultiline("##vrlfiles", vrlFilesBuf, sizeof(vrlFilesBuf), ImVec2(-1, 120));
     ImGui::Spacing();
-    if (ImGui::Button("Open", ImVec2(120, 0)) || confirmed) {
-      std::string path(openPathBuf);
-      if (!path.empty()) {
-        state.provider->loadFile(path);
-        delete state.guiData->netlist_;
-        state.guiData->netlist_ = new NetlistTree(state.provider);
-        state.provider->send(R"({"request":"load_root"})");
+    ImGui::Text("Liberty files (optional, one path per line):");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Browse...##vrlliberty")) {
+      auto files = NativeFileDialog::pickFiles("Select Liberty Files", {"lib"});
+      appendPaths(vrlLibertyBuf, sizeof(vrlLibertyBuf), files);
+    }
+    ImGui::InputTextMultiline("##vrlliberty", vrlLibertyBuf, sizeof(vrlLibertyBuf), ImVec2(-1, 80));
+    ImGui::Spacing();
+    if (ImGui::Button("Open", ImVec2(120,0)) && vrlFilesBuf[0]) {
+      if (localProvider) {
+        localProvider->loadVerilog(splitLines(vrlFilesBuf), splitLines(vrlLibertyBuf));
+        reloadNetlist();
       }
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-      ImGui::CloseCurrentPopup();
-    }
+    if (ImGui::Button("Cancel", ImVec2(120,0))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
+
+  // ==== Open SystemVerilog dialog ====
+  if (svDialogOpen) { ImGui::OpenPopup("Open SystemVerilog"); svDialogOpen = false; }
+  ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Always);
+  if (ImGui::BeginPopupModal("Open SystemVerilog", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("SV/V files or Flist path (one per line):");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Browse SV...")) {
+      auto files = NativeFileDialog::pickFiles("Select SystemVerilog Files", {"sv", "v"});
+      appendPaths(svFilesBuf, sizeof(svFilesBuf), files);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Browse Flist...")) {
+      auto files = NativeFileDialog::pickFiles("Select Flist", {"f", "flist"});
+      appendPaths(svFilesBuf, sizeof(svFilesBuf), files);
+    }
+    ImGui::InputTextMultiline("##svfiles", svFilesBuf, sizeof(svFilesBuf), ImVec2(-1, 140));
+    ImGui::Spacing();
+    if (ImGui::Button("Open", ImVec2(120,0)) && svFilesBuf[0]) {
+      if (localProvider) {
+        localProvider->loadSystemVerilog(splitLines(svFilesBuf));
+        reloadNetlist();
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120,0))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+#endif
 
   // ==== Main layout ====
   ImGuiWindowFlags window_flags =
@@ -274,7 +376,6 @@ bool appFrame(AppState& state) {
         ImGui::BeginChild("TreeScroll", ImVec2(0, 0), false,
           ImGuiWindowFlags_HorizontalScrollbar);
         {
-          Console::Log(state.guiData->getString());
           if (state.guiData->netlist_ && state.connected) {
             state.guiData->netlist_->render();
           } else {

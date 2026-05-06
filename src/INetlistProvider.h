@@ -23,6 +23,4 @@ class INetlistProvider {
     // LocalSNLProvider: fires on_open synchronously and delivers initial data.
     virtual void start() {}
 
-    // Load a netlist from a file path.  No-op for providers that don't support it.
-    virtual void loadFile(const std::string&) {}
 };

@@ -46,9 +46,16 @@ int main(int argc, char* argv[]) {
 
   auto* provider = new LocalSNLProvider();
 
-  // If a netlist file is passed on the command line, load it.
+  // If a path is passed on the command line, load it by extension.
   if (argc > 1) {
-    provider->loadFile(argv[1]);
+    std::string path(argv[1]);
+    std::string ext = path.size() >= 3 ? path.substr(path.rfind('.') + 1) : "";
+    if (ext == "sv")
+      provider->loadSystemVerilog({path});
+    else if (ext == "v")
+      provider->loadVerilog({path}, {});
+    else
+      provider->loadSNL(path); // assume SNL directory
   }
 
   state.provider = provider;

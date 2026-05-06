@@ -92,12 +92,21 @@ if(EMSCRIPTEN_BUILD)
 else()
   message(STATUS "Building native standalone target: naja-schematic-standalone")
 
+  # ---- naja SNL ----
+  # Disable naja sub-features we don't need
+  set(BUILD_NAJA_PYTHON  OFF CACHE BOOL "" FORCE)
+  set(BUILD_BENCHMARKS   OFF CACHE BOOL "" FORCE)
+  set(ENABLE_SANITIZERS  OFF CACHE BOOL "" FORCE)
+  set(CODE_COVERAGE      OFF CACHE BOOL "" FORCE)
+  add_subdirectory(thirdparty/naja)
+
   find_package(SDL2 REQUIRED)
   find_package(OpenGL REQUIRED)
 
   add_executable(naja-schematic-standalone
     ${CORE_SOURCES}
     src/LocalSNLProvider.cpp
+    src/NativeFileDialog.mm
     src/main_native.cpp
   )
 
@@ -105,6 +114,12 @@ else()
   target_link_libraries(naja-schematic-standalone PRIVATE
     ${SDL2_LIBRARIES}
     OpenGL::GL
+    naja_nl
+    naja_snl_verilog
+    naja_snl_liberty
+    naja_snl_systemverilog
+    naja_nl_dump
+    "-framework Cocoa"
   )
 
   # Enable compile_commands.json for clangd / VS Code IntelliSense

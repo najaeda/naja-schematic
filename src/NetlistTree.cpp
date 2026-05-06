@@ -33,17 +33,10 @@ NetlistTreeNode* NetlistTree::getNode(unsigned guiID) const {
 }
 
 std::string NetlistTreeInstanceNode::getLabel() const {
-    std::string label;
-    if (not name_.empty()) {
-        label = name_;
-    } else {
-        if (isRoot()) {
-            label = "<unnamed root>";
-        } else {
-            label = "<unnamed instance>";
-        }
-    }
-    return label;
+  if (isRoot()) return name_.empty() ? "<unnamed root>" : name_;
+  std::string label = name_.empty() ? "<unnamed>" : name_;
+  if (!modelName_.empty()) label += " (" + modelName_ + ")";
+  return label;
 }
 
 void NetlistTreeNode::getPath(NetlistTree::Path& path) const {
@@ -111,13 +104,14 @@ NetlistTreeInstanceNode::NetlistTreeInstanceNode(
 NetlistTreeInstanceNode::NetlistTreeInstanceNode(
     NetlistTreeNode* parent,
     const std::string& name,
+    const std::string& modelName,
     unsigned childID,
     const DesignRef& designRef,
     bool hasTerms,
     bool hasPrimitives,
     bool hasInstances):
     NetlistTreeNode(parent),
-    isRoot_(false), name_(name),
+    isRoot_(false), name_(name), modelName_(modelName),
     childID_(childID), designRef_(designRef),
     hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances)
 {}
@@ -303,13 +297,14 @@ void NetlistTreeNode::createTermNode(
 
 void NetlistTreeNode::createInstanceNode(
   const std::string& name,
+  const std::string& modelName,
   unsigned childID,
   const DesignRef& design_ref,
   bool hasTerms,
   bool hasPrimitives,
   bool hasInstances) {
   auto node = new NetlistTreeInstanceNode(
-    this, name,
+    this, name, modelName,
     childID,
     design_ref,
     hasTerms, hasPrimitives, hasInstances);

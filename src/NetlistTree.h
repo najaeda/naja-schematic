@@ -61,6 +61,7 @@ class NetlistTreeNode {
       std::optional<int> lsb);
     void createInstanceNode(
       const std::string& name,
+      const std::string& modelName,
       unsigned charID,
       const DesignRef& design_ref,
       bool hasTerms,
@@ -114,6 +115,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     NetlistTreeInstanceNode(
       NetlistTreeNode* parent,
       const std::string& name,
+      const std::string& modelName,
       unsigned childID,
       const DesignRef& design_ref,
       bool hasTerms,
@@ -136,6 +138,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
   private:
     bool        isRoot_         {false};
     std::string name_           {};
+    std::string modelName_      {};
     unsigned    childID_        {0};
     DesignRef   designRef_      {};
     bool        hasTerms_       {false};

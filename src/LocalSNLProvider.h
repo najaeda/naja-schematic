@@ -2,46 +2,40 @@
 #ifndef __EMSCRIPTEN__
 
 #include "INetlistProvider.h"
-#include "Types.h"
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
-#include <unordered_map>
+#include <filesystem>
 
-struct VPort {
-  std::string name;
-  Direction   direction {Direction::Input};
-  int         msb {-1};
-  int         lsb {-1};
-};
+namespace naja::NL {
+  class NLDB;
+}
 
-struct VInstance {
-  std::string instanceName;
-  std::string moduleName;
-  unsigned    childId {0};
-};
-
-struct VModule {
-  std::string           name;
-  unsigned              designId {0};
-  std::vector<VPort>    ports;
-  std::vector<VInstance> instances;   // cells whose type is a known module
-  std::vector<VInstance> primitives;  // cells whose type is a library/black-box cell
-};
-
-// INetlistProvider implementation for standalone desktop mode.
-// Parses Verilog/SystemVerilog via yosys and answers tree requests synchronously.
+// INetlistProvider for standalone desktop mode.
+// Backs the tree with naja SNL objects loaded directly in-process.
 class LocalSNLProvider : public INetlistProvider {
   public:
-    LocalSNLProvider() = default;
+    LocalSNLProvider();
+    ~LocalSNLProvider() override;
 
     void send(const std::string& msg) override;
     void on_open(std::function<void()> callback) override;
     void on_message(std::function<void(const std::string&)> callback) override;
     void on_close(std::function<void()> callback) override;
     void on_error(std::function<void(const std::string&)> callback) override;
-
     void start() override;
-    void loadFile(const std::string& path) override;
+
+    // Load a pre-built SNL database (Cap'n Proto serialized directory).
+    void loadSNL(const std::string& path);
+
+    // Load structural Verilog.  Liberty files define the primitive cell library.
+    void loadVerilog(const std::vector<std::string>& verilogFiles,
+                     const std::vector<std::string>& libertyFiles);
+
+    // Load SystemVerilog via slang.
+    // Each entry in sources is either a .sv/.v file or a .f/.flist file;
+    // Flist entries are expanded recursively before passing to the constructor.
+    void loadSystemVerilog(const std::vector<std::string>& sources);
 
   private:
     std::function<void()>                   openCb_;
@@ -49,16 +43,22 @@ class LocalSNLProvider : public INetlistProvider {
     std::function<void()>                   closeCb_;
     std::function<void(const std::string&)> errCb_;
 
-    std::string                              netlibPath_;
-    std::vector<VModule>                     modules_;
-    std::unordered_map<std::string, unsigned> moduleIndex_; // name -> index in modules_
-    unsigned                                 topModuleIdx_ {0};
+    naja::NL::NLDB* db_ {nullptr};
 
-    void        parseYosysJson(const std::string& jsonPath);
+    // Reset the SNL universe to a clean state and return a fresh NLDB.
+    naja::NL::NLDB* freshDB();
+
+    // Find the top design among user libraries and register it in the DB.
+    void findAndSetTop();
+
     void        handleRequest(const std::string& jsonRequest);
     std::string buildRootResponse() const;
-    std::string buildInstancesResponse(unsigned guiId, unsigned designId, bool primitives) const;
-    std::string buildTermsResponse(unsigned guiId, unsigned designId) const;
+    std::string buildInstancesResponse(unsigned guiId, unsigned dbId,
+                                       unsigned libId, unsigned designId,
+                                       bool primitives) const;
+    std::string buildTermsResponse(unsigned guiId, unsigned dbId,
+                                   unsigned libId, unsigned designId) const;
+    std::string buildEquipotentialResponse(const nlohmann::json& req) const;
 };
 
 #endif // __EMSCRIPTEN__
