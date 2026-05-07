@@ -66,6 +66,25 @@ static float                          g_layoutNextY = 0.f;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// Extract the leaf segment from a slash-separated instance path.
+// e.g. "top/sub/<assign:0>" → "<assign:0>"
+static std::string leafSegment(const std::string& path) {
+    auto pos = path.rfind('/');
+    return (pos == std::string::npos) ? path : path.substr(pos + 1);
+}
+
+// Derive the gate/cell model name from the leaf instance name.
+// Naja SNL encodes assign statements as "<assign:N>".
+// Additional primitives can be detected here as the library grows.
+static std::string modelNameFromLeaf(const std::string& leaf) {
+    if (leaf.find("assign") != std::string::npos) return "assign";
+    // Add more patterns here:
+    //   if (leaf.find("DFF") != std::string::npos) return "dff";
+    //   if (leaf == "AND2")                        return "and2";
+    return "";  // generic box
+}
+
 static void buildItems(const Equipotential* eq,
                        std::vector<Item>& drivers,
                        std::vector<Item>& receivers) {
@@ -402,8 +421,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         inst.x     = mi.pos.x;
         inst.y     = mi.pos.y;
         inst.w     = kInstW;
-        inst.name  = key;
-        inst.color = IM_COL32(100, 140, 200, 255);
+        inst.name      = key;
+        inst.modelName = modelNameFromLeaf(leafSegment(key));
+        inst.color     = IM_COL32(100, 140, 200, 255);
         g_occInfoByShapeId[inst.id] = { key, mi.designRef };
         keyToInstId[key] = inst.id;
 

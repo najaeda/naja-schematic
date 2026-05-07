@@ -79,32 +79,62 @@ ImVec2 SchematicView::portWorldPos(const InstanceShape& inst, const Port& port) 
     return ImVec2(px, py);
 }
 
-// Draw a single instance (rectangle, name, ports)
-void SchematicView::drawInstance(ImDrawList* dl, const InstanceShape& inst, const ImVec2& canvasPos, const ImVec2& canvasSize) const {
-    ImVec2 rmin, rmax;
-    worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+// ---------------------------------------------------------------------------
+// Shared port drawing (used by all gate renderers)
+// ---------------------------------------------------------------------------
+static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
+                      const SchematicView& sv,
+                      const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    for (const auto& p : inst.ports) {
+        ImVec2 worldP  = sv.portWorldPos(inst, p);
+        ImVec2 screenP = sv.worldToScreen(worldP, canvasPos, canvasSize);
+        bool   isLeft  = p.lx < 0.0f;
 
-    const bool hasSize = inst.w > 0.0f && inst.h > 0.0f;
-    const bool hasFill = ((inst.color >> 24) & 0xFF) > 0;
-    if (hasSize && hasFill) {
-        // Background
+        ImU32 portColor = p.color != 0 ? p.color
+            : (p.isInput ? IM_COL32(200, 80, 80, 255)
+                         : IM_COL32(80, 200, 80, 255));
+
+        float dotR = std::max(3.0f, 3.5f * sv.transform.scale);
+        dl->AddCircleFilled(screenP, dotR, portColor);
+
+        if (!p.name.empty()) {
+            ImVec2 textSize = ImGui::CalcTextSize(p.name.c_str());
+            ImVec2 lblPos   = isLeft
+                ? ImVec2(screenP.x - 4.0f - textSize.x, screenP.y - textSize.y * 0.5f)
+                : ImVec2(screenP.x + 4.0f,              screenP.y - textSize.y * 0.5f);
+            dl->AddRectFilled(
+                ImVec2(lblPos.x - 2.0f, lblPos.y - 1.0f),
+                ImVec2(lblPos.x + textSize.x + 2.0f, lblPos.y + textSize.y + 1.0f),
+                IM_COL32(30, 30, 30, 210));
+            dl->AddText(lblPos, IM_COL32(220, 220, 220, 230), p.name.c_str());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generic box renderer (fallback for unknown gate types)
+// ---------------------------------------------------------------------------
+static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
+                                const SchematicView& sv,
+                                const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+
+    if (inst.w > 0.0f && inst.h > 0.0f && ((inst.color >> 24) & 0xFF) > 0) {
         dl->AddRectFilled(rmin, rmax, inst.color, 4.0f);
 
-        // Border: dashed golden when interface is partial, solid black otherwise
-        if (inst.partialInterface) {
+        if (inst.partialInterface)
             addDashedRect(dl, rmin, rmax, IM_COL32(210, 175, 55, 240), 2.0f);
-        } else {
-            dl->AddRect(rmin, rmax, IM_COL32(0,0,0,200), 4.0f, 0, 2.0f);
-        }
+        else
+            dl->AddRect(rmin, rmax, IM_COL32(0, 0, 0, 200), 4.0f, 0, 2.0f);
 
-        // Name (centered)
         if (!inst.name.empty()) {
             ImVec2 textSize = ImGui::CalcTextSize(inst.name.c_str());
-            ImVec2 textPos = ImVec2((rmin.x + rmax.x) * 0.5f - textSize.x * 0.5f, rmin.y + 6.0f);
-            dl->AddText(textPos, IM_COL32(255,255,255,230), inst.name.c_str());
+            ImVec2 textPos  = ImVec2((rmin.x + rmax.x) * 0.5f - textSize.x * 0.5f,
+                                     rmin.y + 6.0f);
+            dl->AddText(textPos, IM_COL32(255, 255, 255, 230), inst.name.c_str());
         }
 
-        // Partial-interface indicator: three dots near the bottom of the box
         if (inst.partialInterface) {
             float boxH = rmax.y - rmin.y;
             if (boxH > 28.0f) {
@@ -120,33 +150,48 @@ void SchematicView::drawInstance(ImDrawList* dl, const InstanceShape& inst, cons
         }
     }
 
-    // Draw ports: small colored dot at the box edge + optional label
-    for (const auto& p : inst.ports) {
-        ImVec2 worldP  = portWorldPos(inst, p);
-        ImVec2 screenP = worldToScreen(worldP, canvasPos, canvasSize);
-        bool   isLeft  = p.lx < 0.0f;
+    drawPorts(dl, inst, sv, canvasPos, canvasSize);
+}
 
-        // Driving ports are red, receiving ports are green.
-        // p.isInput encodes the driving role (true = driver/source = red).
-        ImU32 portColor = p.color != 0 ? p.color
-            : (p.isInput ? IM_COL32(200, 80, 80, 255)
-                         : IM_COL32(80, 200, 80, 255));
+// ---------------------------------------------------------------------------
+// assign / buffer — triangle pointing right (input left, output apex right)
+// ---------------------------------------------------------------------------
+static void drawAssignInstance(ImDrawList* dl, const InstanceShape& inst,
+                               const SchematicView& sv,
+                               const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    ImVec2 tl = sv.worldToScreen(ImVec2(inst.x,          inst.y),          canvasPos, canvasSize);
+    ImVec2 bl = sv.worldToScreen(ImVec2(inst.x,          inst.y + inst.h), canvasPos, canvasSize);
+    ImVec2 mr = sv.worldToScreen(ImVec2(inst.x + inst.w, inst.y + inst.h * 0.5f), canvasPos, canvasSize);
 
-        float dotR = std::max(3.0f, 3.5f * transform.scale);
-        dl->AddCircleFilled(screenP, dotR, portColor);
+    // Filled triangle body
+    dl->AddTriangleFilled(tl, bl, mr, IM_COL32(80, 160, 220, 220));
+    // Outline
+    dl->AddTriangle(tl, bl, mr, IM_COL32(0, 0, 0, 200), 1.5f);
 
-        // Port label with opaque background so wires behind it remain readable
-        if (!p.name.empty()) {
-            ImVec2 textSize = ImGui::CalcTextSize(p.name.c_str());
-            ImVec2 lblPos   = isLeft
-                ? ImVec2(screenP.x - 4.0f - textSize.x, screenP.y - textSize.y * 0.5f)
-                : ImVec2(screenP.x + 4.0f,              screenP.y - textSize.y * 0.5f);
-            dl->AddRectFilled(
-                ImVec2(lblPos.x - 2.0f, lblPos.y - 1.0f),
-                ImVec2(lblPos.x + textSize.x + 2.0f, lblPos.y + textSize.y + 1.0f),
-                IM_COL32(30, 30, 30, 210));
-            dl->AddText(lblPos, IM_COL32(220, 220, 220, 230), p.name.c_str());
-        }
+    // Label ("assign") near top-left of the bounding box, small and subtle
+    ImVec2 lblPos = ImVec2(tl.x + 4.0f, tl.y + 4.0f);
+    dl->AddText(lblPos, IM_COL32(255, 255, 255, 180), "=");
+
+    drawPorts(dl, inst, sv, canvasPos, canvasSize);
+}
+
+// ---------------------------------------------------------------------------
+// Gate dispatcher — add new model names here as the library grows
+// ---------------------------------------------------------------------------
+// To add a new gate type:
+//   1. Write a static drawXxxInstance() function above with the same signature
+//   2. Add an else-if branch below matching its modelName string
+// ---------------------------------------------------------------------------
+void SchematicView::drawInstance(ImDrawList* dl, const InstanceShape& inst,
+                                 const ImVec2& canvasPos, const ImVec2& canvasSize) const {
+    if (inst.modelName == "assign") {
+        drawAssignInstance(dl, inst, *this, canvasPos, canvasSize);
+    }
+    // else if (inst.modelName == "and2")  { drawAnd2Instance (...); }
+    // else if (inst.modelName == "or2")   { drawOr2Instance  (...); }
+    // else if (inst.modelName == "dff")   { drawDffInstance  (...); }
+    else {
+        drawGenericInstance(dl, inst, *this, canvasPos, canvasSize);
     }
 }
 

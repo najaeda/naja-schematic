@@ -112,7 +112,8 @@ struct Port {
 
 struct InstanceShape {
     int id = 0;
-    std::string name;
+    std::string name;       // instance path (display label)
+    std::string modelName;  // gate/cell type — drives the icon dispatcher in drawInstance()
     float x = 0.0f;
     float y = 0.0f;  // world coords (top-left)
     float w = 100.0f;
