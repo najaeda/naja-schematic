@@ -8,6 +8,33 @@ namespace {
 inline float clampf(float v, float lo, float hi) {
     return std::max(lo, std::min(hi, v));
 }
+
+// Draws a dashed rectangle in screen space (no corner rounding).
+// dashPx / gapPx are in screen pixels so they stay legible at any zoom.
+void addDashedRect(ImDrawList* dl, ImVec2 rmin, ImVec2 rmax,
+                   ImU32 col, float thickness,
+                   float dashPx = 6.0f, float gapPx = 4.0f) {
+    auto seg = [&](float ax, float ay, float bx, float by) {
+        float dx = bx - ax, dy = by - ay;
+        float len = sqrtf(dx * dx + dy * dy);
+        if (len < 0.001f) return;
+        dx /= len; dy /= len;
+        bool on = true;
+        for (float t = 0.0f; t < len; ) {
+            float step = on ? dashPx : gapPx;
+            float t2 = std::min(t + step, len);
+            if (on)
+                dl->AddLine({ax + dx * t, ay + dy * t},
+                            {ax + dx * t2, ay + dy * t2}, col, thickness);
+            t = t2;
+            on = !on;
+        }
+    };
+    seg(rmin.x, rmin.y, rmax.x, rmin.y); // top
+    seg(rmax.x, rmin.y, rmax.x, rmax.y); // right
+    seg(rmax.x, rmax.y, rmin.x, rmax.y); // bottom
+    seg(rmin.x, rmax.y, rmin.x, rmin.y); // left
+}
 } // namespace
 
 // Convert a point in world coordinates to screen coordinates using the renderer transform.
@@ -63,8 +90,12 @@ void SchematicView::drawInstance(ImDrawList* dl, const InstanceShape& inst, cons
         // Background
         dl->AddRectFilled(rmin, rmax, inst.color, 4.0f);
 
-        // Border
-        dl->AddRect(rmin, rmax, IM_COL32(0,0,0,200), 4.0f, 0, 2.0f);
+        // Border: dashed golden when interface is partial, solid black otherwise
+        if (inst.partialInterface) {
+            addDashedRect(dl, rmin, rmax, IM_COL32(210, 175, 55, 240), 2.0f);
+        } else {
+            dl->AddRect(rmin, rmax, IM_COL32(0,0,0,200), 4.0f, 0, 2.0f);
+        }
 
         // Name (centered)
         if (!inst.name.empty()) {
@@ -72,46 +103,49 @@ void SchematicView::drawInstance(ImDrawList* dl, const InstanceShape& inst, cons
             ImVec2 textPos = ImVec2((rmin.x + rmax.x) * 0.5f - textSize.x * 0.5f, rmin.y + 6.0f);
             dl->AddText(textPos, IM_COL32(255,255,255,230), inst.name.c_str());
         }
+
+        // Partial-interface indicator: three dots near the bottom of the box
+        if (inst.partialInterface) {
+            float boxH = rmax.y - rmin.y;
+            if (boxH > 28.0f) {
+                const float dotR    = 2.5f;
+                const float spacing = 7.0f;
+                const float dotY    = rmax.y - dotR - 5.0f;
+                const float dotX    = (rmin.x + rmax.x) * 0.5f;
+                const ImU32 dotCol  = IM_COL32(210, 175, 55, 220);
+                dl->AddCircleFilled({dotX - spacing, dotY}, dotR, dotCol);
+                dl->AddCircleFilled({dotX,           dotY}, dotR, dotCol);
+                dl->AddCircleFilled({dotX + spacing, dotY}, dotR, dotCol);
+            }
+        }
     }
 
-    // Draw ports (triangles)
+    // Draw ports: small colored dot at the box edge + optional label
     for (const auto& p : inst.ports) {
-        ImVec2 worldP = portWorldPos(inst, p);
+        ImVec2 worldP  = portWorldPos(inst, p);
         ImVec2 screenP = worldToScreen(worldP, canvasPos, canvasSize);
-        float radius = std::max(4.0f, 6.0f * transform.scale);
-        bool isLeft = p.lx < 0.0f;
-        bool pointRight = true;
+        bool   isLeft  = p.lx < 0.0f;
 
-        // Port color selection:
-        // 1) If port.color != 0 use it (explicit override).
-        // 2) Otherwise use p.isInput: true -> red, false -> green.
-        ImU32 portColor = p.color != 0 ? p.color : (p.isInput ? IM_COL32(200, 80, 80, 255) : IM_COL32(80, 200, 80, 255));
-        ImVec2 triCenter = screenP;
-        if (p.direction == Direction::Input) {
-            float inset = radius * 0.6f;
-            triCenter.x += (isLeft ? inset : -inset);
-        }
-        if (pointRight) {
-            ImVec2 tip = ImVec2(triCenter.x + radius, triCenter.y);
-            ImVec2 b1 = ImVec2(triCenter.x - radius, triCenter.y - radius);
-            ImVec2 b2 = ImVec2(triCenter.x - radius, triCenter.y + radius);
-            dl->AddTriangleFilled(tip, b1, b2, portColor);
-            dl->AddTriangle(tip, b1, b2, IM_COL32(0, 0, 0, 200), 1.0f);
-        } else {
-            ImVec2 tip = ImVec2(triCenter.x - radius, triCenter.y);
-            ImVec2 b1 = ImVec2(triCenter.x + radius, triCenter.y - radius);
-            ImVec2 b2 = ImVec2(triCenter.x + radius, triCenter.y + radius);
-            dl->AddTriangleFilled(tip, b1, b2, portColor);
-            dl->AddTriangle(tip, b1, b2, IM_COL32(0, 0, 0, 200), 1.0f);
-        }
+        // Driving ports are red, receiving ports are green.
+        // p.isInput encodes the driving role (true = driver/source = red).
+        ImU32 portColor = p.color != 0 ? p.color
+            : (p.isInput ? IM_COL32(200, 80, 80, 255)
+                         : IM_COL32(80, 200, 80, 255));
 
-        // port label (small)
+        float dotR = std::max(3.0f, 3.5f * transform.scale);
+        dl->AddCircleFilled(screenP, dotR, portColor);
+
+        // Port label with opaque background so wires behind it remain readable
         if (!p.name.empty()) {
             ImVec2 textSize = ImGui::CalcTextSize(p.name.c_str());
-            ImVec2 lblPos = isLeft
-                ? ImVec2(screenP.x - radius - 4.0f - textSize.x, screenP.y - 6.0f)
-                : ImVec2(screenP.x + radius + 4.0f, screenP.y - 6.0f);
-            dl->AddText(lblPos, IM_COL32(220,220,220,220), p.name.c_str());
+            ImVec2 lblPos   = isLeft
+                ? ImVec2(screenP.x - 4.0f - textSize.x, screenP.y - textSize.y * 0.5f)
+                : ImVec2(screenP.x + 4.0f,              screenP.y - textSize.y * 0.5f);
+            dl->AddRectFilled(
+                ImVec2(lblPos.x - 2.0f, lblPos.y - 1.0f),
+                ImVec2(lblPos.x + textSize.x + 2.0f, lblPos.y + textSize.y + 1.0f),
+                IM_COL32(30, 30, 30, 210));
+            dl->AddText(lblPos, IM_COL32(220, 220, 220, 230), p.name.c_str());
         }
     }
 }
@@ -129,22 +163,20 @@ void SchematicView::drawNet(ImDrawList* dl, const NetWire& net, const ImVec2& ca
     ImVec2 dstWorld = portWorldPos(*dstInst, *dstPort);
     ImVec2 srcScreen = worldToScreen(srcWorld, canvasPos, canvasSize);
     ImVec2 dstScreen = worldToScreen(dstWorld, canvasPos, canvasSize);
-    float portRadius = std::max(4.0f, 6.0f * transform.scale);
-    // All port triangles point right: connect to triangle tip.
-    ImVec2 srcTip = ImVec2(srcScreen.x + portRadius, srcScreen.y);
-    ImVec2 dstTip = ImVec2(dstScreen.x + portRadius, dstScreen.y);
+    // Wire connects directly at the port world position (no triangle offset).
+    float srcSide = (srcPort->lx >= 0.0f) ? 1.0f : -1.0f;
+    float dstSide = (dstPort->lx >= 0.0f) ? 1.0f : -1.0f;
 
     const float stub = std::max(12.0f, 18.0f * transform.scale);
-    float srcDir = (srcPort->lx < 0.0f) ? -1.0f : 1.0f;
-    float dstDir = (dstPort->lx < 0.0f) ? -1.0f : 1.0f;
 
-    ImVec2 p0 = srcTip;
-    ImVec2 p1 = ImVec2(srcScreen.x + stub * srcDir, srcScreen.y);
-    ImVec2 p4 = ImVec2(dstScreen.x - stub * dstDir, dstScreen.y);
-    float midX = (p1.x + p4.x) * 0.5f;
+    // Depart/arrive with a short stub so the wire leaves the box orthogonally.
+    ImVec2 p0 = srcScreen;
+    ImVec2 p1 = ImVec2(srcScreen.x + stub * srcSide, srcScreen.y);
+    ImVec2 p4 = ImVec2(dstScreen.x + stub * dstSide, dstScreen.y);
+    float  midX = (p1.x + p4.x) * 0.5f;
     ImVec2 p2 = ImVec2(midX, p1.y);
     ImVec2 p3 = ImVec2(midX, p4.y);
-    ImVec2 p5 = dstTip;
+    ImVec2 p5 = dstScreen;
 
     std::array<ImVec2, 6> points = {p0, p1, p2, p3, p4, p5};
     ImU32 col = net.color;
@@ -155,10 +187,6 @@ void SchematicView::drawNet(ImDrawList* dl, const NetWire& net, const ImVec2& ca
         dl->AddLine(points[i], points[i + 1], IM_COL32(0,0,0,80), thickness + 2.0f);
         dl->AddLine(points[i], points[i + 1], col, thickness);
     }
-
-    // Endpoints highlight
-    dl->AddCircleFilled(srcTip, 3.0f + transform.scale, IM_COL32(255,255,255,200));
-    dl->AddCircleFilled(dstTip, 3.0f + transform.scale, IM_COL32(255,255,255,200));
 }
 
 // Main render entry

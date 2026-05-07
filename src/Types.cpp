@@ -106,9 +106,10 @@ void from_json(const json& j, Equipotential& e) {
           if (!pathElem.is_array()) {
             continue;
           }
-          const auto& name = pathElem[0].get<std::string>();
+          const auto& name     = pathElem[0].get<std::string>();
           const auto& child_id = pathElem[1].get<unsigned>();
           occurrence.path.push_back(name);
+          occurrence.pathIds.push_back(child_id);
         }
       }
 
@@ -131,6 +132,9 @@ void from_json(const json& j, Equipotential& e) {
       Console::Log("Parsed term in occurrence: " + term.getString());
 
       occurrence.term = std::move(term);
+
+      if (occJson.contains("design_ref") && occJson["design_ref"].is_object())
+        occurrence.designRef = occJson["design_ref"].get<DesignRef>();
 
       e.occurrences.push_back(std::move(occurrence));
     }

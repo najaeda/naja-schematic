@@ -59,6 +59,7 @@ class LocalSNLProvider : public INetlistProvider {
     std::string buildTermsResponse(unsigned guiId, unsigned dbId,
                                    unsigned libId, unsigned designId) const;
     std::string buildEquipotentialResponse(const nlohmann::json& req) const;
+    std::string buildExpandInstanceTermsResponse(const nlohmann::json& req) const;
 };
 
 #endif // __EMSCRIPTEN__

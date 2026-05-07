@@ -68,8 +68,10 @@ struct BitTerm {
 using Path = std::vector<std::string>;
 
 struct InstTermOccurrence {
-  Path path;
+  Path path;                       // instance names (display)
+  std::vector<unsigned> pathIds;   // instance child_ids (used to send load_equipotential)
   BitTerm term;
+  DesignRef designRef;             // model of the tail instance — used to fetch its full interface
 };
 
 struct TermResponseJson {
@@ -116,6 +118,10 @@ struct InstanceShape {
     float w = 100.0f;
     float h = 50.0f;  // size in world units
     ImU32 color = IM_COL32(120,120,120,255);
+    // When true, only a subset of ports is shown (e.g. only those on the
+    // current net).  The renderer draws a dashed border so the user knows
+    // the instance can be expanded to reveal its full interface.
+    bool partialInterface = false;
     std::vector<Port> ports;
 };
 

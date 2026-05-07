@@ -330,6 +330,8 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
     msgCb_(buildTermsResponse(guiId, dbId, libId, designId));
   } else if (request == "load_equipotential") {
     msgCb_(buildEquipotentialResponse(req));
+  } else if (request == "expand_instance_terms") {
+    msgCb_(buildExpandInstanceTermsResponse(req));
   } else {
     Console::Error("LocalSNLProvider: unknown request: " + request);
   }
@@ -499,8 +501,19 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
         for (auto* inst : occ.getPath().getInstances())
           pathArr.push_back(json::array({inst->getString(),
                                          static_cast<unsigned>(inst->getID())}));
+        // The occurrence path is to the parent design; append the instance itself
+        auto* theInst = it->getInstance();
+        pathArr.push_back(json::array({theInst->getString(),
+                                       static_cast<unsigned>(theInst->getID())}));
         auto entry = bitTermJson(bt);
         entry["path"] = std::move(pathArr);
+        if (auto* model = theInst->getModel()) {
+          entry["design_ref"] = {
+            {"db_id",      static_cast<unsigned>(model->getDB()->getID())},
+            {"library_id", static_cast<unsigned>(model->getLibrary()->getID())},
+            {"design_id",  static_cast<unsigned>(model->getID())}
+          };
+        }
         occs.push_back(std::move(entry));
       }
       return json{{"response","equipotential_response"},{"terms",terms},{"occurrences",occs}}.dump();
@@ -531,8 +544,19 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
         for (auto* inst : occ.getPath().getInstances())
           pathArr.push_back(json::array({inst->getString(),
                                          static_cast<unsigned>(inst->getID())}));
+        // The occurrence path is to the parent design; append the instance itself
+        auto* theInst = it->getInstance();
+        pathArr.push_back(json::array({theInst->getString(),
+                                       static_cast<unsigned>(theInst->getID())}));
         auto entry = bitTermJson(bt);
         entry["path"] = std::move(pathArr);
+        if (auto* model = theInst->getModel()) {
+          entry["design_ref"] = {
+            {"db_id",      static_cast<unsigned>(model->getDB()->getID())},
+            {"library_id", static_cast<unsigned>(model->getLibrary()->getID())},
+            {"design_id",  static_cast<unsigned>(model->getID())}
+          };
+        }
         occs.push_back(std::move(entry));
       }
       return json{{"response","equipotential_response"},{"terms",terms},{"occurrences",occs}}.dump();
@@ -541,6 +565,55 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
     Console::Error("buildEquipotentialResponse: " + std::string(e.what()));
     return empty.dump();
   }
+}
+
+std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) const {
+  std::string pathKey = req.value("path_key", std::string(""));
+  unsigned dbId = 0, libId = 0, designId = 0;
+  if (req.contains("design_ref")) {
+    dbId     = req["design_ref"].value("db_id",      0u);
+    libId    = req["design_ref"].value("library_id", 0u);
+    designId = req["design_ref"].value("design_id",  0u);
+  }
+
+  json terms = json::array();
+  auto* targetDB = resolveDB(dbId);
+  if (targetDB) {
+    auto* design = findDesign(targetDB,
+                              static_cast<NLID::LibraryID>(libId),
+                              static_cast<NLID::DesignID>(designId));
+    if (design) {
+      for (auto* term : design->getTerms()) {
+        if (auto* bus = dynamic_cast<SNLBusTerm*>(term)) {
+          // Expand bus into individual bits so each gets its own port indicator.
+          int lo = std::min(static_cast<int>(bus->getLSB()),
+                            static_cast<int>(bus->getMSB()));
+          int hi = std::max(static_cast<int>(bus->getLSB()),
+                            static_cast<int>(bus->getMSB()));
+          for (int b = lo; b <= hi; ++b) {
+            if (auto* bit = bus->getBit(b)) {
+              json t = bitTermJson(bit);
+              // Append the bit index to the name for display ("data[3]"),
+              // but keep the "bit" field so the client can build requests.
+              if (t.contains("bit")) {
+                t["name"] = t["name"].get<std::string>() +
+                            "[" + std::to_string(t["bit"].get<int>()) + "]";
+              }
+              terms.push_back(std::move(t));
+            }
+          }
+        } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
+          terms.push_back(bitTermJson(st));
+        }
+      }
+    }
+  }
+
+  return json{
+    {"response", "expanded_instance_terms"},
+    {"path_key", pathKey},
+    {"terms",    terms}
+  }.dump();
 }
 
 #endif // __EMSCRIPTEN__

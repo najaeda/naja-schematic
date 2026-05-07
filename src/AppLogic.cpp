@@ -29,6 +29,7 @@ using json = nlohmann::json;
 
 void setupProvider(AppState& state) {
   state.guiData->netlist_ = new NetlistTree(state.provider);
+  EquipotentialView::setProvider(state.provider);
 
   state.provider->on_open([&state]() {
     state.connected = true;
@@ -138,6 +139,24 @@ void setupProvider(AppState& state) {
     } else if (resp == "equipotential_response") {
       Console::Log("Equipotential data received");
       state.guiData->equipotential_ = new Equipotential(j.get<Equipotential>());
+    } else if (resp == "expanded_instance_terms") {
+      std::string pathKey = j.value("path_key", std::string(""));
+      std::vector<EquipotentialView::ExpandedPort> ports;
+      if (j.contains("terms") && j["terms"].is_array()) {
+        for (const auto& t : j["terms"]) {
+          EquipotentialView::ExpandedPort ep;
+          ep.name    = t.value("name", std::string(""));
+          ep.childId = t.value("child_id", 0u);
+          if (t.contains("bit") && !t["bit"].is_null())
+            ep.bit = t["bit"].get<int>();
+          int dirInt   = t.value("direction", 0);
+          ep.direction = dirInt == 1 ? Direction::Output
+                       : dirInt == 2 ? Direction::Inout
+                                     : Direction::Input;
+          ports.push_back(std::move(ep));
+        }
+      }
+      EquipotentialView::applyInstanceExpansion(pathKey, ports);
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
     }
