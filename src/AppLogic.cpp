@@ -27,9 +27,19 @@ using json = nlohmann::json;
 // Provider setup — identical message dispatch for both WASM and native modes.
 // ---------------------------------------------------------------------------
 
+// Wire the equipotential-reset callback onto whichever NetlistTree is current.
+// Called both at startup and after every design reload.
+static void attachTreeCallbacks(AppState& state) {
+  state.guiData->netlist_->setOnEquipotentialRequest([&state]() {
+    state.guiData->clearEquipotentials();
+    EquipotentialView::resetLayout();
+  });
+}
+
 void setupProvider(AppState& state) {
   state.guiData->netlist_ = new NetlistTree(state.provider);
   EquipotentialView::setProvider(state.provider);
+  attachTreeCallbacks(state);
 
   state.provider->on_open([&state]() {
     state.connected = true;
@@ -233,6 +243,7 @@ bool appFrame(AppState& state) {
     EquipotentialView::clearNets();
     delete state.guiData->netlist_;
     state.guiData->netlist_ = new NetlistTree(state.provider);
+    attachTreeCallbacks(state);
     state.provider->send(R"({"request":"load_root"})");
   };
 
@@ -451,7 +462,10 @@ bool appFrame(AppState& state) {
       ImGui::BeginChild("TablePanel", ImVec2(0, 0), true,
         ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_HorizontalScrollbar);
       {
-        EquipotentialView::renderTable(state.guiData->equipotentials_);
+        const auto& eqs = state.guiData->equipotentials_;
+        std::vector<Equipotential*> lastEquip;
+        if (!eqs.empty()) lastEquip.push_back(eqs.back());
+        EquipotentialView::renderTable(lastEquip);
       }
       ImGui::EndChild();
     }

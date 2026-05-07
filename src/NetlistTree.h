@@ -35,10 +35,17 @@ class NetlistTree {
     void sendLoadEquipotential(const Path& path, const TermID& termID) const;
     INetlistProvider* getProvider() const { return ws_; }
 
+    // Called before every tree-initiated equipotential request.
+    // Use this to reset the schematic and table views.
+    void setOnEquipotentialRequest(std::function<void()> cb) {
+      onEquipotentialRequest_ = std::move(cb);
+    }
+
     void render();
     void insertNodeInMap(NetlistTreeNode* node);
   private:
-    INetlistProvider*  ws_         {nullptr};
+    INetlistProvider*       ws_                    {nullptr};
+    std::function<void()>   onEquipotentialRequest_;
     NetlistTreeNode*        root_       {nullptr};
     unsigned                nextGUIID_ {0};
     NodesMap                nodes_;

@@ -25,6 +25,9 @@ class EquipotentialView {
     static void clearNets();
     // Returns true (and resets the flag) if the canvas right-click requested a clear.
     static bool takePendingClear();
+    // Clears persistent layout state immediately (no deferred flag).
+    // Use this when the equipotentials vector is also being cleared synchronously.
+    static void resetLayout();
 
     // Called once during app setup so the view can send expansion requests.
     static void setProvider(INetlistProvider* provider);

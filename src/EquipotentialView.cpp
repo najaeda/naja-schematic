@@ -173,14 +173,19 @@ void EquipotentialView::zoomOut()   { g_pendingZoomSteps--; }
 void EquipotentialView::fitView()   { g_pendingFit = true; }
 void EquipotentialView::clearNets() { g_pendingClear = true; }
 
-bool EquipotentialView::takePendingClear() {
-    if (!g_pendingClear) return false;
-    g_pendingClear = false;
+void EquipotentialView::resetLayout() {
     g_placedPositions.clear();
     g_laidOut.clear();
     g_expandedInstances.clear();
     g_pendingExpansions.clear();
     g_layoutNextY = 0.f;
+    g_pendingFit   = true;
+}
+
+bool EquipotentialView::takePendingClear() {
+    if (!g_pendingClear) return false;
+    g_pendingClear = false;
+    resetLayout();
     return true;
 }
 

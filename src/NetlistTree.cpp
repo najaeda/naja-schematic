@@ -349,5 +349,6 @@ void NetlistTree::sendLoadEquipotential(const NetlistTree::Path& path, const Ter
   }
   request += R"(})";
   Console::Log("Sending load equipotential request: " + request);
+  if (onEquipotentialRequest_) onEquipotentialRequest_();
   ws_->send(request);
 }
