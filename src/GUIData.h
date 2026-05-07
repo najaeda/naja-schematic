@@ -1,13 +1,18 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 class NetlistTree;
-class Equipotential;
+struct Equipotential;
 
 struct GUIData {
   public:
     std::string getString() const;
-    NetlistTree*    netlist_;
-    Equipotential*  equipotential_; 
+
+    void addEquipotential(Equipotential* eq);
+    void clearEquipotentials();
+
+    NetlistTree*                  netlist_       {nullptr};
+    std::vector<Equipotential*>   equipotentials_;
 };

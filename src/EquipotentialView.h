@@ -17,11 +17,14 @@ class EquipotentialView {
       std::optional<int>   bit;                // set for bus bits
     };
 
-    static void renderSchematic(Equipotential* equipotential);
-    static void renderTable(Equipotential* equipotential);
+    static void renderSchematic(const std::vector<Equipotential*>& equipotentials);
+    static void renderTable(const std::vector<Equipotential*>& equipotentials);
     static void zoomIn();
     static void zoomOut();
     static void fitView();
+    static void clearNets();
+    // Returns true (and resets the flag) if the canvas right-click requested a clear.
+    static bool takePendingClear();
 
     // Called once during app setup so the view can send expansion requests.
     static void setProvider(INetlistProvider* provider);

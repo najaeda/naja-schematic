@@ -138,7 +138,7 @@ void setupProvider(AppState& state) {
       }
     } else if (resp == "equipotential_response") {
       Console::Log("Equipotential data received");
-      state.guiData->equipotential_ = new Equipotential(j.get<Equipotential>());
+      state.guiData->addEquipotential(new Equipotential(j.get<Equipotential>()));
     } else if (resp == "expanded_instance_terms") {
       std::string pathKey = j.value("path_key", std::string(""));
       std::vector<EquipotentialView::ExpandedPort> ports;
@@ -211,13 +211,15 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Open SystemVerilog...",  "")) { svDialogOpen  = true; svFilesBuf[0]  = '\0'; }
       ImGui::Separator();
 #endif
-      if (ImGui::MenuItem("About")) { std::cout << "About" << std::endl; }
+      if (ImGui::MenuItem("About")) ImGui::OpenPopup("About naja-schematic");
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-      if (ImGui::MenuItem("Zoom In",  "Ctrl++")) EquipotentialView::zoomIn();
-      if (ImGui::MenuItem("Zoom Out", "Ctrl+-")) EquipotentialView::zoomOut();
-      if (ImGui::MenuItem("Fit",      "Ctrl+0")) EquipotentialView::fitView();
+      if (ImGui::MenuItem("Zoom In",    "Ctrl++")) EquipotentialView::zoomIn();
+      if (ImGui::MenuItem("Zoom Out",   "Ctrl+-")) EquipotentialView::zoomOut();
+      if (ImGui::MenuItem("Fit",        "Ctrl+0")) EquipotentialView::fitView();
+      ImGui::Separator();
+      if (ImGui::MenuItem("Clear nets", "Ctrl+K")) state.guiData->clearEquipotentials();
       ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
@@ -226,6 +228,8 @@ bool appFrame(AppState& state) {
 #ifndef __EMSCRIPTEN__
   // Helper: reset the netlist tree and re-request root after loading
   auto reloadNetlist = [&]() {
+    state.guiData->clearEquipotentials();
+    EquipotentialView::clearNets();
     delete state.guiData->netlist_;
     state.guiData->netlist_ = new NetlistTree(state.provider);
     state.provider->send(R"({"request":"load_root"})");
@@ -411,7 +415,8 @@ bool appFrame(AppState& state) {
       ImGui::BeginChild("SchematicPanel", ImVec2(0, 0), true,
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
       {
-        EquipotentialView::renderSchematic(state.guiData->equipotential_);
+        if (EquipotentialView::takePendingClear()) state.guiData->clearEquipotentials();
+        EquipotentialView::renderSchematic(state.guiData->equipotentials_);
       }
       ImGui::EndChild();
     }
@@ -445,13 +450,48 @@ bool appFrame(AppState& state) {
       ImGui::BeginChild("TablePanel", ImVec2(0, 0), true,
         ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_HorizontalScrollbar);
       {
-        EquipotentialView::renderTable(state.guiData->equipotential_);
+        EquipotentialView::renderTable(state.guiData->equipotentials_);
       }
       ImGui::EndChild();
     }
     ImGui::EndChild();
   }
   ImGui::End();
+
+  // === About modal ===
+  ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
+  if (ImGui::BeginPopupModal("About naja-schematic", nullptr,
+      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
+
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 1.0f, 1.0f));
+    ImGui::SetWindowFontScale(1.2f);
+    ImGui::Text("naja-schematic");
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopStyleColor();
+
+    ImGui::TextDisabled("Netlist schematic viewer for naja SNL designs");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::Text("Commit:  %s", NAJA_SCHEMATIC_GIT_HASH);
+    ImGui::Text("Project: github.com/najaeda/naja-schematic");
+    ImGui::Spacing();
+
+    ImGui::SeparatorText("Built with");
+    ImGui::BulletText("naja SNL  —  open-source EDA netlist library");
+    ImGui::Spacing();
+
+    ImGui::SeparatorText("License");
+    ImGui::TextWrapped("Apache License 2.0  —  Copyright najaeda contributors");
+    ImGui::Spacing();
+
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 80.0f) * 0.5f);
+    if (ImGui::Button("Close", ImVec2(80, 0)))
+      ImGui::CloseCurrentPopup();
+
+    ImGui::EndPopup();
+  }
 
   // === GL render ===
   ImGui::Render();

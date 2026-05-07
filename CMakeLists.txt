@@ -5,6 +5,23 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ------------------------------------------------------------
+# Git commit hash (baked in at configure time)
+# ------------------------------------------------------------
+find_package(Git QUIET)
+if(GIT_FOUND)
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE NAJA_SCHEMATIC_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+else()
+  set(NAJA_SCHEMATIC_GIT_HASH "unknown")
+endif()
+message(STATUS "naja-schematic commit: ${NAJA_SCHEMATIC_GIT_HASH}")
+
+# ------------------------------------------------------------
 # Detect Emscripten
 # ------------------------------------------------------------
 if("${CMAKE_CXX_COMPILER}" MATCHES "em\\+\\+")
@@ -85,6 +102,9 @@ if(EMSCRIPTEN_BUILD)
   target_compile_options(naja-schematic PRIVATE ${EM_COMPILE_FLAGS})
   target_link_options(naja-schematic    PRIVATE ${EM_LINK_FLAGS})
   set_target_properties(naja-schematic  PROPERTIES SUFFIX ".html")
+  target_compile_definitions(naja-schematic PRIVATE
+    NAJA_SCHEMATIC_GIT_HASH="${NAJA_SCHEMATIC_GIT_HASH}"
+  )
 
 # ============================================================
 # Target 2: naja-schematic-standalone — Native desktop app
@@ -120,6 +140,10 @@ else()
     naja_snl_systemverilog
     naja_nl_dump
     "-framework Cocoa"
+  )
+
+  target_compile_definitions(naja-schematic-standalone PRIVATE
+    NAJA_SCHEMATIC_GIT_HASH="${NAJA_SCHEMATIC_GIT_HASH}"
   )
 
   # Enable compile_commands.json for clangd / VS Code IntelliSense

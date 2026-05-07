@@ -1,4 +1,4 @@
-// EquipotentialView.cpp
+// EquipotentialView.cpp — merged instances, horizontal expansion
 #include "EquipotentialView.h"
 
 #include <algorithm>
@@ -11,46 +11,180 @@
 #include "INetlistProvider.h"
 
 // ---------------------------------------------------------------------------
+// Layout geometry constants
+// ---------------------------------------------------------------------------
+static constexpr float kInstW       = 180.0f;
+static constexpr float kInstH       = 70.0f;
+static constexpr float kColGap      = 120.0f;
+static constexpr float kRowSpacing  = 24.0f;
+static constexpr float kPortSpacing = 18.0f;
+static constexpr float kLeftMargin  = 20.0f;
+static constexpr float kNetVGap     = 80.0f;
+
+// ---------------------------------------------------------------------------
+// Internal item type
+// ---------------------------------------------------------------------------
+struct Item {
+    std::string            label;       // port/term name (for matching, port rendering)
+    std::string            fullName;    // slash-path for instances; term name for terms
+    Direction              direction   = Direction::Inout;
+    bool                   isTerm      = false;
+    DesignRef              designRef{};
+    unsigned               termChildId = 0;
+    std::optional<int>     termBit;
+    std::vector<unsigned>  pathIds;
+
+    const std::string& key() const { return fullName.empty() ? label : fullName; }
+};
+
+// ---------------------------------------------------------------------------
 // Static view state
 // ---------------------------------------------------------------------------
-
 static SchematicView      g_schematic;
 static int                g_pendingZoomSteps = 0;
 static bool               g_pendingFit       = false;
+static bool               g_pendingClear     = false;
 static INetlistProvider*  g_provider         = nullptr;
 
-// Per-frame mapping: InstanceShape.id → occurrence info needed for expansion.
-struct OccurrenceInfo {
-    std::string pathKey;
-    DesignRef   designRef;
-};
-static std::map<int, OccurrenceInfo> g_occInfoByShapeId;
-
-// Per-frame mapping: port internal id → data needed to send load_equipotential.
+struct OccurrenceInfo { std::string pathKey; DesignRef designRef; };
 struct PortEquiRequest {
-    std::vector<unsigned> pathIds;   // instance child_ids (empty for top-level terms)
-    unsigned              termId  = 0;
+    std::vector<unsigned> pathIds;
+    unsigned              termId = 0;
     std::optional<int>    bit;
 };
+static std::map<int, OccurrenceInfo>  g_occInfoByShapeId;
 static std::map<int, PortEquiRequest> g_portEquiByPortId;
 
-// Persistent expansion data: pathKey → all ports of that instance's model.
 static std::map<std::string, std::vector<EquipotentialView::ExpandedPort>> g_expandedInstances;
-
-// Requests in-flight (avoid duplicate requests).
 static std::set<std::string> g_pendingExpansions;
+
+// Persistent layout state
+static std::map<std::string, ImVec2>  g_placedPositions;  // key → world top-left
+static std::set<const Equipotential*> g_laidOut;
+static float                          g_layoutNextY = 0.f;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+static void buildItems(const Equipotential* eq,
+                       std::vector<Item>& drivers,
+                       std::vector<Item>& receivers) {
+    for (const auto& bt : eq->terms) {
+        Item item;
+        item.label       = bt.getString();
+        item.fullName    = bt.name;
+        item.direction   = bt.direction;
+        item.isTerm      = true;
+        item.termChildId = bt.child_id;
+        item.termBit     = bt.bit;
+        (bt.direction == Direction::Input ? drivers : receivers).push_back(std::move(item));
+    }
+    for (const auto& occ : eq->occurrences) {
+        Item item;
+        item.label       = occ.term.getString();
+        item.isTerm      = false;
+        item.designRef   = occ.designRef;
+        item.termChildId = occ.term.child_id;
+        item.termBit     = occ.term.bit;
+        item.pathIds     = occ.pathIds;
+        std::string joined;
+        bool first = true;
+        for (const auto& seg : occ.path) {
+            if (!first) joined += '/';
+            joined += seg;
+            first = false;
+        }
+        item.fullName  = std::move(joined);
+        item.direction = occ.term.direction;
+        (occ.term.direction == Direction::Output ? drivers : receivers).push_back(std::move(item));
+    }
+}
+
+static float portLy(int i, int n) {
+    return n > 1 ? -0.4f + 0.8f * float(i) / float(n - 1) : 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// Layout: called once per new equip, stores positions in g_placedPositions
+// ---------------------------------------------------------------------------
+static void layoutEquipotential(const Equipotential* eq) {
+    if (g_laidOut.count(eq)) return;
+    g_laidOut.insert(eq);
+
+    std::vector<Item> drivers, receivers;
+    buildItems(eq, drivers, receivers);
+    if (drivers.empty() && receivers.empty()) return;
+
+    // Find anchor: first non-term already placed
+    const Item* anchor      = nullptr;
+    bool        anchorDrives = false;
+
+    for (const auto& item : drivers) {
+        if (!item.isTerm && g_placedPositions.count(item.key()))
+            { anchor = &item; anchorDrives = true; break; }
+    }
+    if (!anchor) {
+        for (const auto& item : receivers) {
+            if (!item.isTerm && g_placedPositions.count(item.key()))
+                { anchor = &item; anchorDrives = false; break; }
+        }
+    }
+
+    if (!anchor) {
+        // First/independent net: two-column layout below existing content
+        const float lx = kLeftMargin;
+        const float rx = kLeftMargin + kInstW + kColGap;
+        float dyl = g_layoutNextY, dyr = g_layoutNextY;
+        for (const auto& item : drivers) {
+            if (!item.isTerm) {
+                g_placedPositions.emplace(item.key(), ImVec2{lx, dyl});
+                dyl += kInstH + kRowSpacing;
+            }
+        }
+        for (const auto& item : receivers) {
+            if (!item.isTerm) {
+                g_placedPositions.emplace(item.key(), ImVec2{rx, dyr});
+                dyr += kInstH + kRowSpacing;
+            }
+        }
+        g_layoutNextY = std::max(dyl, dyr) + kNetVGap;
+    } else {
+        // Expansion: extend horizontally from anchor
+        const ImVec2& ap  = g_placedPositions[anchor->key()];
+        const auto& items = anchorDrives ? receivers : drivers;
+        float newX = anchorDrives
+            ? ap.x + kInstW + kColGap    // new receivers go right of driver
+            : ap.x - kInstW - kColGap;  // new drivers go left of receiver
+        float dy = ap.y;
+        for (const auto& item : items) {
+            if (!item.isTerm) {
+                auto [it, inserted] = g_placedPositions.emplace(item.key(), ImVec2{newX, dy});
+                if (inserted) dy += kInstH + kRowSpacing;
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+void EquipotentialView::zoomIn()    { g_pendingZoomSteps++; }
+void EquipotentialView::zoomOut()   { g_pendingZoomSteps--; }
+void EquipotentialView::fitView()   { g_pendingFit = true; }
+void EquipotentialView::clearNets() { g_pendingClear = true; }
 
-void EquipotentialView::zoomIn()  { g_pendingZoomSteps += 1; }
-void EquipotentialView::zoomOut() { g_pendingZoomSteps -= 1; }
-void EquipotentialView::fitView() { g_pendingFit = true; }
-
-void EquipotentialView::setProvider(INetlistProvider* provider) {
-    g_provider = provider;
+bool EquipotentialView::takePendingClear() {
+    if (!g_pendingClear) return false;
+    g_pendingClear = false;
+    g_placedPositions.clear();
+    g_laidOut.clear();
+    g_expandedInstances.clear();
+    g_pendingExpansions.clear();
+    g_layoutNextY = 0.f;
+    return true;
 }
+
+void EquipotentialView::setProvider(INetlistProvider* p) { g_provider = p; }
 
 void EquipotentialView::applyInstanceExpansion(
         const std::string& pathKey,
@@ -60,140 +194,106 @@ void EquipotentialView::applyInstanceExpansion(
 }
 
 // ---------------------------------------------------------------------------
-// Table color helpers
+// Color helpers
 // ---------------------------------------------------------------------------
-
 namespace {
-
-ImColor getTopTermColor(Direction direction) {
-    switch (direction) {
-        case Direction::Input:  return ImColor(255, 0, 0);
-        case Direction::Output: return ImColor(0, 255, 0);
-        case Direction::Inout:  return ImColor(255, 255, 0);
-        default:                return ImColor(255, 255, 255);
+ImColor topTermColor(Direction d) {
+    switch (d) {
+        case Direction::Input:  return ImColor(255,   0,   0);
+        case Direction::Output: return ImColor(  0, 255,   0);
+        default:                return ImColor(255, 255,   0);
     }
 }
-
-ImColor getInstTermOccurrenceColor(Direction direction) {
-    switch (direction) {
-        case Direction::Input:  return ImColor(0, 255, 0);
-        case Direction::Output: return ImColor(255, 0, 0);
-        case Direction::Inout:  return ImColor(255, 255, 0);
-        default:                return ImColor(255, 255, 255);
+ImColor occTermColor(Direction d) {
+    switch (d) {
+        case Direction::Input:  return ImColor(  0, 255,   0);
+        case Direction::Output: return ImColor(255,   0,   0);
+        default:                return ImColor(255, 255,   0);
     }
 }
-
-// Distribute n items evenly in [-0.4, +0.4].
-float portLy(int i, int n) {
-    return n > 1 ? -0.4f + 0.8f * static_cast<float>(i) / static_cast<float>(n - 1) : 0.0f;
-}
-
-} // anonymous namespace
+} // namespace
 
 // ---------------------------------------------------------------------------
-// Schematic render
+// renderSchematic
 // ---------------------------------------------------------------------------
-
-void EquipotentialView::renderSchematic(Equipotential* equipotential) {
+void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equipotentials) {
     const float scrollSz = ImGui::GetFrameHeight();
-    ImVec2 availSize = ImGui::GetContentRegionAvail();
-    ImVec2 canvasSize = ImVec2(std::max(10.0f, availSize.x - scrollSz),
-                               std::max(10.0f, availSize.y - scrollSz));
-    ImVec2 cursorStart = ImGui::GetCursorPos();
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    ImVec2 csz   = ImVec2(std::max(10.f, avail.x - scrollSz),
+                          std::max(10.f, avail.y - scrollSz));
+    ImVec2 cur0  = ImGui::GetCursorPos();
 
-    ImGui::BeginChild("##SchematicCanvas", canvasSize, false,
+    ImGui::BeginChild("##SC", csz, false,
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImVec2 inner = ImGui::GetContentRegionAvail();
+    ImGui::InvisibleButton("cv", inner,
+        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight |
+        ImGuiButtonFlags_MouseButtonMiddle);
+    ImDrawList* dl   = ImGui::GetWindowDrawList();
+    ImVec2      cpos = ImGui::GetItemRectMin();
 
-    ImVec2 innerSize = ImGui::GetContentRegionAvail();
+    g_schematic.handleInteraction(cpos, inner);
 
-    ImGui::InvisibleButton("net_canvas", innerSize,
-                           ImGuiButtonFlags_MouseButtonLeft  |
-                           ImGuiButtonFlags_MouseButtonRight |
-                           ImGuiButtonFlags_MouseButtonMiddle);
-    ImDrawList* dl      = ImGui::GetWindowDrawList();
-    ImVec2      canvasPos = ImGui::GetItemRectMin();
-
-    g_schematic.handleInteraction(canvasPos, innerSize);
-
-    if (g_pendingZoomSteps != 0) {
-        int   steps  = g_pendingZoomSteps;
+    if (g_pendingZoomSteps) {
+        float f = g_pendingZoomSteps > 0 ? 1.1f : 0.9f;
+        for (int i = 0; i < std::abs(g_pendingZoomSteps); ++i) g_schematic.zoomBy(f);
         g_pendingZoomSteps = 0;
-        float factor = steps > 0 ? 1.1f : 0.9f;
-        for (int i = 0; i < std::abs(steps); ++i)
-            g_schematic.zoomBy(factor);
     }
-    if (g_pendingFit) {
-        g_pendingFit = false;
-        g_schematic.requestFit(true);
+    if (g_pendingFit) { g_schematic.requestFit(true); g_pendingFit = false; }
+
+    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+        ImGui::OpenPopup("##ctx");
+    if (ImGui::BeginPopup("##ctx")) {
+        if (ImGui::MenuItem("Clear all nets")) g_pendingClear = true;
+        if (ImGui::MenuItem("Fit view"))       g_schematic.requestFit(true);
+        ImGui::EndPopup();
     }
 
-    // -----------------------------------------------------------------------
-    // Double-click handling (port dot → load equipotential;
-    //                        instance box → expand interface)
-    // -----------------------------------------------------------------------
+    // Double-click: port dot → load equip; instance box → expand interface
     if (ImGui::IsItemHovered() &&
-        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
-        g_provider) {
+        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && g_provider) {
 
-        // Convert mouse screen position to world coordinates.
-        ImVec2 mouse = ImGui::GetMousePos();
-        float  s     = g_schematic.transform.scale;
-        float  wx    = (mouse.x - canvasPos.x) / s
-                       + g_schematic.transform.offset.x
-                       - g_schematic.transform.screenOrigin.x / s;
-        float  wy    = (mouse.y - canvasPos.y) / s
-                       + g_schematic.transform.offset.y
-                       - g_schematic.transform.screenOrigin.y / s;
-
-        // --- Pass 1: port-dot hit test → load equipotential ---
-        // Use a hit radius equivalent to ~10 screen pixels in world space.
-        const float hitR  = 10.0f / std::max(0.01f, s);
-        const float hitR2 = hitR * hitR;
-        bool portHit = false;
+        float s  = g_schematic.transform.scale;
+        ImVec2 m = ImGui::GetMousePos();
+        float wx = (m.x - cpos.x) / s + g_schematic.transform.offset.x
+                   - g_schematic.transform.screenOrigin.x / s;
+        float wy = (m.y - cpos.y) / s + g_schematic.transform.offset.y
+                   - g_schematic.transform.screenOrigin.y / s;
+        const float hr2 = (10.f / std::max(0.01f, s)) * (10.f / std::max(0.01f, s));
+        bool hit = false;
 
         for (const auto& inst : g_schematic.instances) {
             for (const auto& port : inst.ports) {
                 ImVec2 pw = g_schematic.portWorldPos(inst, port);
                 float dx = wx - pw.x, dy = wy - pw.y;
-                if (dx * dx + dy * dy > hitR2) continue;
-
-                auto dataIt = g_portEquiByPortId.find(port.id);
-                if (dataIt == g_portEquiByPortId.end()) break;
-
-                const PortEquiRequest& req = dataIt->second;
+                if (dx*dx + dy*dy > hr2) continue;
+                auto it = g_portEquiByPortId.find(port.id);
+                if (it == g_portEquiByPortId.end()) break;
                 json j;
-                j["request"]  = "load_equipotential";
-                j["path"]     = req.pathIds;
-                j["term_id"]  = req.termId;
-                if (req.bit.has_value())
-                    j["bit"] = req.bit.value();
+                j["request"] = "load_equipotential";
+                j["path"]    = it->second.pathIds;
+                j["term_id"] = it->second.termId;
+                if (it->second.bit.has_value()) j["bit"] = it->second.bit.value();
                 g_provider->send(j.dump());
-                portHit = true;
-                break;
+                hit = true; break;
             }
-            if (portHit) break;
+            if (hit) break;
         }
-
-        // --- Pass 2: instance-box hit test → expand interface (if no port hit) ---
-        if (!portHit) {
+        if (!hit) {
             for (const auto& inst : g_schematic.instances) {
                 if (!inst.partialInterface) continue;
                 if (wx < inst.x || wx > inst.x + inst.w) continue;
                 if (wy < inst.y || wy > inst.y + inst.h) continue;
-
-                auto infoIt = g_occInfoByShapeId.find(inst.id);
-                if (infoIt == g_occInfoByShapeId.end()) break;
-
-                const OccurrenceInfo& info = infoIt->second;
-                if (g_pendingExpansions.count(info.pathKey)) break;
-
-                g_pendingExpansions.insert(info.pathKey);
+                auto it = g_occInfoByShapeId.find(inst.id);
+                if (it == g_occInfoByShapeId.end()) break;
+                if (g_pendingExpansions.count(it->second.pathKey)) break;
+                g_pendingExpansions.insert(it->second.pathKey);
                 json req;
                 req["request"]                  = "expand_instance_terms";
-                req["path_key"]                 = info.pathKey;
-                req["design_ref"]["db_id"]      = info.designRef.db_id;
-                req["design_ref"]["library_id"] = info.designRef.library_id;
-                req["design_ref"]["design_id"]  = info.designRef.design_id;
+                req["path_key"]                 = it->second.pathKey;
+                req["design_ref"]["db_id"]      = it->second.designRef.db_id;
+                req["design_ref"]["library_id"] = it->second.designRef.library_id;
+                req["design_ref"]["design_id"]  = it->second.designRef.design_id;
                 g_provider->send(req.dump());
                 break;
             }
@@ -201,345 +301,319 @@ void EquipotentialView::renderSchematic(Equipotential* equipotential) {
     }
 
     // -----------------------------------------------------------------------
-    // Rebuild schematic geometry from equipotential data
+    // Layout new equips (once each, stores positions)
+    // -----------------------------------------------------------------------
+    for (Equipotential* eq : equipotentials)
+        if (eq) layoutEquipotential(eq);
+
+    // -----------------------------------------------------------------------
+    // Rebuild geometry: merged instances + per-equip wires
     // -----------------------------------------------------------------------
     g_schematic.instances.clear();
     g_schematic.nets.clear();
     g_occInfoByShapeId.clear();
     g_portEquiByPortId.clear();
 
-    if (!equipotential) {
-        dl->AddText(ImVec2(canvasPos.x + 8.0f, canvasPos.y + 8.0f),
-                    IM_COL32(255, 100, 100, 255), "");
-    } else {
-        std::string dbg = "terms: " + std::to_string(equipotential->terms.size())
-                        + "  occ: " + std::to_string(equipotential->occurrences.size());
-        dl->AddText(ImVec2(canvasPos.x + 8.0f, canvasPos.y + 8.0f),
-                    IM_COL32(200, 200, 200, 255), dbg.c_str());
-    }
+    int nextInstId = 1, nextPortId = 1, totalItems = 0;
 
-    if (equipotential) {
-        const float leftMargin  = 20.0f;
-        const float columnGap   = 120.0f;
-        const float rowSpacing  = 24.0f;
-        const float instW       = 180.0f;
-        const float instH       = 70.0f;
-        const float termH       = 30.0f;
-        const float portSpacing = 18.0f; // world units per port row when expanded
+    // Pass 1: collect merged instance data across all equips
+    struct PortSlot {
+        int                   portId;
+        std::string           name;
+        Direction             direction;
+        unsigned              termChildId;
+        std::optional<int>    termBit;
+        std::vector<unsigned> pathIds;
+    };
+    struct MInst {
+        ImVec2                pos{};
+        bool                  initialized = false;
+        DesignRef             designRef{};
+        std::vector<PortSlot> ports;
+    };
+    std::map<std::string, MInst> minsts;
 
-        int nextInstanceId = 1;
-        int nextPortId     = 1;
+    // Per-equip wire endpoints: {key, portId}
+    struct WireEnd { std::string key; int portId; };
+    std::vector<std::vector<WireEnd>> equiEnds(equipotentials.size());
 
-        struct PortRef { int instanceId; int portId; };
-        std::vector<PortRef> allPortRefs;
-        allPortRefs.reserve(equipotential->terms.size() + equipotential->occurrences.size());
+    for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
+        Equipotential* eq = equipotentials[ei];
+        if (!eq || (eq->terms.empty() && eq->occurrences.empty())) continue;
 
-        struct Item {
-            std::string            label;
-            std::string            fullName;
-            Direction              direction  = Direction::Inout;
-            bool                   isTerm     = false;
-            DesignRef              designRef{};
-            // Data needed to send load_equipotential when a port is clicked.
-            unsigned               termChildId = 0;
-            std::optional<int>     termBit;
-            std::vector<unsigned>  pathIds;   // empty for top-level terms
-        };
+        std::vector<Item> drivers, receivers;
+        buildItems(eq, drivers, receivers);
+        totalItems += int(drivers.size() + receivers.size());
 
-        std::vector<Item> drivers;
-        std::vector<Item> receivers;
-
-        for (const auto& bitTerm : equipotential->terms) {
-            Item item;
-            item.label       = bitTerm.getString();
-            item.fullName    = bitTerm.name;
-            item.direction   = bitTerm.direction;
-            item.isTerm      = true;
-            item.termChildId = bitTerm.child_id;
-            item.termBit     = bitTerm.bit;
-            // pathIds stays empty — top-level terms have no instance path
-            if (bitTerm.direction == Direction::Input)
-                drivers.push_back(std::move(item));
-            else
-                receivers.push_back(std::move(item));
-        }
-
-        for (const auto& occ : equipotential->occurrences) {
-            Item item;
-            item.label       = occ.term.getString();
-            item.isTerm      = false;
-            item.designRef   = occ.designRef;
-            item.termChildId = occ.term.child_id;
-            item.termBit     = occ.term.bit;
-            item.pathIds     = occ.pathIds;
-            std::string joined;
-            bool first = true;
-            for (const auto& name : occ.path) {
-                if (!first) joined += '/';
-                joined += name;
-                first = false;
-            }
-            item.fullName  = joined;
-            item.direction = occ.term.direction;
-            if (occ.term.direction == Direction::Output)
-                drivers.push_back(std::move(item));
-            else
-                receivers.push_back(std::move(item));
-        }
-
-        const size_t totalItems = drivers.size() + receivers.size();
-        if (totalItems < 64) {
-            const float leftColumnX  = leftMargin;
-            const float rightColumnX = leftMargin + instW + columnGap;
-
-            // Helper: how tall does an item need to be (accounts for expansion).
-            auto itemHeight = [&](const Item& item) -> float {
-                if (item.isTerm) return termH;
-                const std::string& key = item.fullName.empty() ? item.label : item.fullName;
-                auto it = g_expandedInstances.find(key);
-                if (it == g_expandedInstances.end() || it->second.empty())
-                    return instH;
-                // Separate into left (input) and right (output) groups.
-                int nLeft = 0, nRight = 0;
-                for (const auto& ep : it->second) {
-                    if (ep.direction == Direction::Input) ++nLeft; else ++nRight;
-                }
-                int maxSide = std::max(nLeft, nRight);
-                return std::max(instH, static_cast<float>(maxSide) * portSpacing + 10.0f);
-            };
-
-            // Compute column heights for vertical centering.
-            auto colHeight = [&](const std::vector<Item>& col) -> float {
-                float h = 0;
-                for (size_t i = 0; i < col.size(); ++i) {
-                    h += itemHeight(col[i]);
-                    if (i + 1 < col.size()) h += rowSpacing;
-                }
-                return h;
-            };
-            float totalH   = std::max(colHeight(drivers), colHeight(receivers));
-            float startY   = (innerSize.y - totalH) * 0.5f;
-
-            // addItem: create InstanceShape + ports, register occurrence info.
-            auto addItem = [&](const Item& item, float x, float y) {
-                // Signal-flow rule (matches column assignment above):
-                //   Top-level term,  Input  direction  → drives the internal net   (driver)
-                //   Top-level term,  Output direction  → receives from internal net (receiver)
-                //   Instance port,   Output direction  → drives the net             (driver)
-                //   Instance port,   Input  direction  → receives from the net      (receiver)
-                // The apparent inversion for top terms is intentional: an Input port
-                // of the module boundary is a SOURCE inside the module.
-                bool isDriving = (item.isTerm  && item.direction == Direction::Input) ||
-                                 (!item.isTerm && item.direction == Direction::Output);
-
-                InstanceShape inst;
-                inst.id = nextInstanceId++;
-                inst.x  = x;
-
+        for (int pass = 0; pass < 2; ++pass) {
+            const auto& items = pass == 0 ? drivers : receivers;
+            for (const auto& item : items) {
                 if (item.isTerm) {
-                    // Term: no box, just a dot + label rendered via the port.
-                    inst.name  = "";
-                    inst.y     = y;
-                    inst.w     = 0.0f;
-                    inst.h     = 0.0f;
-                    inst.color = IM_COL32(0, 0, 0, 0);
-                    inst.partialInterface = false;
-                } else {
-                    inst.name  = item.fullName.empty() ? item.label : item.fullName;
-                    inst.y     = y;
-                    inst.w     = instW;
-                    inst.color = IM_COL32(100, 140, 200, 255);
+                    int pid = nextPortId++;
+                    equiEnds[ei].push_back({ "term:" + item.label, pid });
+                    g_portEquiByPortId[pid] = { item.pathIds, item.termChildId, item.termBit };
+                    continue;
                 }
-
-                const std::string pathKey =
-                    item.isTerm ? std::string()
-                                : (item.fullName.empty() ? item.label : item.fullName);
-
-                // Determine if we have full expansion data for this instance.
-                const std::vector<ExpandedPort>* expPorts = nullptr;
-                if (!item.isTerm) {
-                    auto expIt = g_expandedInstances.find(pathKey);
-                    if (expIt != g_expandedInstances.end() && !expIt->second.empty())
-                        expPorts = &expIt->second;
+                auto& mi = minsts[item.key()];
+                if (!mi.initialized) {
+                    mi.initialized = true;
+                    mi.designRef   = item.designRef;
+                    auto pit = g_placedPositions.find(item.key());
+                    mi.pos = pit != g_placedPositions.end()
+                        ? pit->second : ImVec2{kLeftMargin, 0.f};
                 }
-
-                // Reserve an ID for the connected port up-front and advance the
-                // counter immediately.  Without the pre-advance the first
-                // non-connected expanded port would collide with connectedPortId.
-                int connectedPortId = nextPortId++;
-
-                if (expPorts) {
-                    // -------------------------------------------------------
-                    // Fully expanded: distribute all ports by side / direction.
-                    // -------------------------------------------------------
-                    inst.partialInterface = false;
-
-                    // Count each side.
-                    int nLeft = 0, nRight = 0;
-                    for (const auto& ep : *expPorts) {
-                        if (ep.direction == Direction::Input) ++nLeft; else ++nRight;
-                    }
-                    int maxSide = std::max(nLeft, nRight);
-                    inst.h = std::max(instH,
-                                      static_cast<float>(maxSide) * portSpacing + 10.0f);
-
-                    int li = 0, ri = 0;
-                    for (const auto& ep : *expPorts) {
-                        bool isInput     = (ep.direction == Direction::Input);
-                        bool isConnected = (ep.name == item.label);
-
-                        Port p;
-                        p.id        = isConnected ? connectedPortId : nextPortId++;
-                        p.name      = ep.name;
-                        p.lx        = isInput ? -0.5f : 0.5f;
-                        p.ly        = isInput ? portLy(li++, nLeft) : portLy(ri++, nRight);
-                        p.direction = ep.direction;
-                        p.isInput   = !isInput; // driving role: output=driver=red
-                        inst.ports.push_back(p);
-
-                        // Each expanded port can load its own equipotential.
-                        g_portEquiByPortId[p.id] = { item.pathIds, ep.childId, ep.bit };
-                    }
-                } else {
-                    // -------------------------------------------------------
-                    // Partial: only the single connected port is known.
-                    // -------------------------------------------------------
-                    if (!item.isTerm) {
-                        inst.partialInterface = true;
-                        inst.h = instH;
-                    }
-
-                    Port p;
-                    p.id        = connectedPortId;
-                    p.name      = item.label;
-                    p.lx        = isDriving ? 0.5f : -0.5f;
-                    p.ly        = 0.0f;
-                    p.direction = item.direction;
-                    p.isInput   = isDriving; // driving role (true = driver = red dot)
-                    inst.ports.push_back(p);
-
-                    g_portEquiByPortId[connectedPortId] = {
-                        item.pathIds, item.termChildId, item.termBit
-                    };
+                // Find or create port slot for this port
+                int pid = -1;
+                for (const auto& ps : mi.ports) {
+                    if (ps.name == item.label && ps.direction == item.direction)
+                        { pid = ps.portId; break; }
                 }
-
-                g_schematic.instances.push_back(inst);
-                allPortRefs.push_back({ inst.id, connectedPortId });
-
-                // Register occurrence info for instance-box expansion.
-                if (!item.isTerm)
-                    g_occInfoByShapeId[inst.id] = { pathKey, item.designRef };
-            };
-
-            // Layout: variable row heights, centred vertically.
-            float dy = startY;
-            for (size_t i = 0; i < drivers.size(); ++i) {
-                addItem(drivers[i], leftColumnX, dy);
-                dy += itemHeight(drivers[i]) + rowSpacing;
-            }
-            dy = startY;
-            for (size_t i = 0; i < receivers.size(); ++i) {
-                addItem(receivers[i], rightColumnX, dy);
-                dy += itemHeight(receivers[i]) + rowSpacing;
+                if (pid < 0) {
+                    pid = nextPortId++;
+                    PortSlot ps;
+                    ps.portId      = pid;
+                    ps.name        = item.label;
+                    ps.direction   = item.direction;
+                    ps.termChildId = item.termChildId;
+                    ps.termBit     = item.termBit;
+                    ps.pathIds     = item.pathIds;
+                    mi.ports.push_back(std::move(ps));
+                    g_portEquiByPortId[pid] = { item.pathIds, item.termChildId, item.termBit };
+                }
+                equiEnds[ei].push_back({ item.key(), pid });
             }
         }
-
-        // Build net wires: hub (first) → every other port.
-        if (allPortRefs.size() >= 2) {
-            const PortRef hub = allPortRefs.front();
-            for (size_t i = 1; i < allPortRefs.size(); ++i) {
-                NetWire n;
-                n.id          = static_cast<int>(g_schematic.nets.size()) + 1;
-                n.srcInstance = hub.instanceId;
-                n.srcPortId   = hub.portId;
-                n.dstInstance = allPortRefs[i].instanceId;
-                n.dstPortId   = allPortRefs[i].portId;
-                n.color       = IM_COL32(200, 200, 100, 255);
-                g_schematic.nets.push_back(n);
-            }
-        }
-    } // end if equipotential
-
-    static int lastTotalItems = -1;
-    int currentTotalItems = equipotential
-        ? static_cast<int>(equipotential->terms.size() + equipotential->occurrences.size())
-        : 0;
-    if (currentTotalItems != lastTotalItems) {
-        g_schematic.requestFit(true);
-        lastTotalItems = currentTotalItems;
     }
-    g_schematic.updateFitIfNeeded(canvasPos, innerSize, 60.0f);
-    g_schematic.render(dl, canvasPos, innerSize);
 
-    ImGui::EndChild(); // ##SchematicCanvas
+    // Pass 2: build InstanceShapes from merged data
+    std::map<std::string, int> keyToInstId;
 
-    // Scrollbar sliders in the reserved strips around the canvas child.
-    ImVec2 wMin(-500.0f, -500.0f), wMax(500.0f, 500.0f);
-    const float pad = 120.0f;
+    for (auto& [key, mi] : minsts) {
+        auto expIt = g_expandedInstances.find(key);
+        bool isExp = expIt != g_expandedInstances.end() && !expIt->second.empty();
+
+        InstanceShape inst;
+        inst.id    = nextInstId++;
+        inst.x     = mi.pos.x;
+        inst.y     = mi.pos.y;
+        inst.w     = kInstW;
+        inst.name  = key;
+        inst.color = IM_COL32(100, 140, 200, 255);
+        g_occInfoByShapeId[inst.id] = { key, mi.designRef };
+        keyToInstId[key] = inst.id;
+
+        if (isExp) {
+            inst.partialInterface = false;
+            int nL = 0, nR = 0;
+            for (const auto& ep : expIt->second)
+                (ep.direction == Direction::Input ? nL : nR)++;
+            inst.h = std::max(kInstH, float(std::max(nL, nR)) * kPortSpacing + 10.f);
+
+            int li = 0, ri = 0;
+            for (const auto& ep : expIt->second) {
+                bool isIn = (ep.direction == Direction::Input);
+                // Reuse portId from accumulated data if this port was in a loaded equip
+                int pid = nextPortId++;
+                for (const auto& ps : mi.ports) {
+                    if (ps.name == ep.name && ps.direction == ep.direction)
+                        { pid = ps.portId; nextPortId--; break; }
+                }
+                // Instance pathIds from any known port slot
+                auto pathIds = mi.ports.empty() ? std::vector<unsigned>{} : mi.ports[0].pathIds;
+                g_portEquiByPortId[pid] = { pathIds, ep.childId, ep.bit };
+
+                Port p;
+                p.id = pid; p.name = ep.name;
+                p.lx = isIn ? -0.5f : 0.5f;
+                p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
+                p.direction = ep.direction;
+                p.isInput   = !isIn;
+                inst.ports.push_back(p);
+            }
+        } else {
+            inst.partialInterface = true;
+            int nL = 0, nR = 0;
+            for (const auto& ps : mi.ports)
+                (ps.direction == Direction::Input ? nL : nR)++;
+            inst.h = std::max(kInstH, float(std::max(nL, nR)) * kPortSpacing + 10.f);
+
+            int li = 0, ri = 0;
+            for (const auto& ps : mi.ports) {
+                bool isIn = (ps.direction == Direction::Input);
+                Port p;
+                p.id = ps.portId; p.name = ps.name;
+                p.lx = isIn ? -0.5f : 0.5f;
+                p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
+                p.direction = ps.direction;
+                p.isInput   = !isIn;
+                inst.ports.push_back(p);
+            }
+        }
+        g_schematic.instances.push_back(std::move(inst));
+    }
+
+    // Pass 3: build term InstanceShapes per equip (not merged)
+    for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
+        Equipotential* eq = equipotentials[ei];
+        if (!eq) continue;
+
+        std::vector<Item> drivers, receivers;
+        buildItems(eq, drivers, receivers);
+
+        // Determine column X for this equip's terms from placed instances
+        float lx = kLeftMargin, rx = kLeftMargin + kInstW + kColGap;
+        float bandY = 0.f; int nBand = 0;
+        auto accInst = [&](const Item& item) {
+            if (item.isTerm) return;
+            auto pit = g_placedPositions.find(item.key());
+            if (pit == g_placedPositions.end()) return;
+            lx = std::min(lx, pit->second.x);
+            rx = std::max(rx, pit->second.x + kInstW);
+            bandY += pit->second.y; ++nBand;
+        };
+        for (const auto& d : drivers)   accInst(d);
+        for (const auto& r : receivers) accInst(r);
+        if (nBand) bandY /= float(nBand);
+
+        float termLx = lx  - 40.f;
+        float termRx = rx  + 20.f;
+
+        for (int pass = 0; pass < 2; ++pass) {
+            const auto& items = pass == 0 ? drivers : receivers;
+            float ty = bandY;
+            for (const auto& item : items) {
+                if (!item.isTerm) { ty += kInstH + kRowSpacing; continue; }
+
+                int pid = -1;
+                for (const auto& we : equiEnds[ei]) {
+                    if (we.key == "term:" + item.label) { pid = we.portId; break; }
+                }
+                if (pid < 0) continue;
+
+                bool isInput = (item.direction == Direction::Input);
+                InstanceShape inst;
+                inst.id = nextInstId++;
+                inst.x  = isInput ? termLx : termRx;
+                inst.y  = ty;
+                inst.w  = 0.f; inst.h = 0.f;
+                inst.color = IM_COL32(0, 0, 0, 0);
+                inst.partialInterface = false;
+
+                Port p;
+                p.id = pid; p.name = item.label;
+                p.lx = isInput ? 1.0f : -1.0f;
+                p.ly = 0.f;
+                p.direction = item.direction;
+                p.isInput   = isInput;
+                inst.ports.push_back(p);
+                keyToInstId["term:" + item.label + ":" + std::to_string(ei)] = inst.id;
+                // Patch the equiEnds key so wire lookup works
+                for (auto& we : equiEnds[ei]) {
+                    if (we.key == "term:" + item.label)
+                        we.key = "term:" + item.label + ":" + std::to_string(ei);
+                }
+                g_schematic.instances.push_back(std::move(inst));
+                ty += 30.f;
+            }
+        }
+    }
+
+    // Pass 4: wires per equip
+    for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
+        const auto& ends = equiEnds[ei];
+        if (ends.size() < 2) continue;
+
+        struct WR { int instId; int portId; };
+        std::vector<WR> wrs;
+        for (const auto& we : ends) {
+            auto it = keyToInstId.find(we.key);
+            if (it == keyToInstId.end()) continue;
+            wrs.push_back({ it->second, we.portId });
+        }
+        if (wrs.size() < 2) continue;
+
+        for (size_t i = 1; i < wrs.size(); ++i) {
+            NetWire n;
+            n.id          = int(g_schematic.nets.size()) + 1;
+            n.srcInstance = wrs[0].instId;
+            n.srcPortId   = wrs[0].portId;
+            n.dstInstance = wrs[i].instId;
+            n.dstPortId   = wrs[i].portId;
+            n.color       = IM_COL32(200, 200, 100, 255);
+            g_schematic.nets.push_back(n);
+        }
+    }
+
+    static int lastTotal = -1;
+    if (totalItems != lastTotal) { g_schematic.requestFit(true); lastTotal = totalItems; }
+    g_schematic.updateFitIfNeeded(cpos, inner, 60.f);
+    g_schematic.render(dl, cpos, inner);
+    ImGui::EndChild();
+
+    // Scrollbars
+    ImVec2 wMin(-500.f, -500.f), wMax(500.f, 500.f);
     if (g_schematic.computeWorldBounds(wMin, wMax)) {
-        wMin.x -= pad; wMin.y -= pad;
-        wMax.x += pad; wMax.y += pad;
+        wMin.x -= 120.f; wMin.y -= 120.f; wMax.x += 120.f; wMax.y += 120.f;
     }
-
-    ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, 24.0f);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,         ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_SliderGrab,       ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImVec4(0.65f, 0.65f, 0.65f, 1.0f));
-
-    ImGui::SetCursorPos(ImVec2(cursorStart.x + canvasSize.x, cursorStart.y));
-    ImGui::VSliderFloat("##VScroll", ImVec2(scrollSz, canvasSize.y),
-                        &g_schematic.transform.offset.y, wMax.y, wMin.y, "");
-
-    ImGui::SetCursorPos(ImVec2(cursorStart.x, cursorStart.y + canvasSize.y));
-    ImGui::SetNextItemWidth(canvasSize.x);
-    ImGui::SliderFloat("##HScroll", &g_schematic.transform.offset.x, wMin.x, wMax.x, "");
-
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, 24.f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,         ImVec4(0.12f, 0.12f, 0.12f, 1));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab,       ImVec4(0.45f, 0.45f, 0.45f, 1));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImVec4(0.65f, 0.65f, 0.65f, 1));
+    ImGui::SetCursorPos(ImVec2(cur0.x + csz.x, cur0.y));
+    ImGui::VSliderFloat("##VS", ImVec2(scrollSz, csz.y),
+        &g_schematic.transform.offset.y, wMax.y, wMin.y, "");
+    ImGui::SetCursorPos(ImVec2(cur0.x, cur0.y + csz.y));
+    ImGui::SetNextItemWidth(csz.x);
+    ImGui::SliderFloat("##HS", &g_schematic.transform.offset.x, wMin.x, wMax.x, "");
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar();
 }
 
 // ---------------------------------------------------------------------------
-// Table render
+// renderTable
 // ---------------------------------------------------------------------------
-
-void EquipotentialView::renderTable(Equipotential* equipotential) {
-    if (ImGui::BeginTable("equipotential_table", 2,
+void EquipotentialView::renderTable(const std::vector<Equipotential*>& equipotentials) {
+    if (!ImGui::BeginTable("eq_table", 2,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
-    {
-        ImGui::TableSetupColumn("Element",   ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Direction", ImGuiTableColumnFlags_WidthFixed, 70.0f);
-        ImGui::TableHeadersRow();
+        return;
 
-        if (equipotential) {
-            for (const auto& term : equipotential->terms) {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::Text("%s", term.getString().c_str());
-                ImGui::TableSetColumnIndex(1);
-                ImColor c = getTopTermColor(term.direction);
-                ImGui::PushStyleColor(ImGuiCol_Text,
-                    ImVec4(c.Value.x, c.Value.y, c.Value.z, c.Value.w));
-                ImGui::Text("%s", toString(term.direction));
-                ImGui::PopStyleColor();
-            }
+    ImGui::TableSetupColumn("Element",   ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Direction", ImGuiTableColumnFlags_WidthFixed, 70);
+    ImGui::TableHeadersRow();
 
-            for (const auto& occ : equipotential->occurrences) {
-                std::string label;
-                for (const auto& inst : occ.path) { label += inst; label += '/'; }
-                label += occ.term.getString();
-
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::Text("%s", label.c_str());
-                ImGui::TableSetColumnIndex(1);
-                ImColor c = getInstTermOccurrenceColor(occ.term.direction);
-                ImGui::PushStyleColor(ImGuiCol_Text,
-                    ImVec4(c.Value.x, c.Value.y, c.Value.z, c.Value.w));
-                ImGui::Text("%s", toString(occ.term.direction));
-                ImGui::PopStyleColor();
-            }
+    for (size_t i = 0; i < equipotentials.size(); ++i) {
+        const Equipotential* eq = equipotentials[i];
+        if (!eq) continue;
+        if (i > 0) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0); ImGui::Separator();
+            ImGui::TableSetColumnIndex(1); ImGui::Separator();
         }
-
-        ImGui::EndTable();
+        for (const auto& t : eq->terms) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%s", t.getString().c_str());
+            ImGui::TableSetColumnIndex(1);
+            auto c = topTermColor(t.direction);
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                ImVec4(c.Value.x, c.Value.y, c.Value.z, c.Value.w));
+            ImGui::Text("%s", toString(t.direction));
+            ImGui::PopStyleColor();
+        }
+        for (const auto& occ : eq->occurrences) {
+            std::string label;
+            for (const auto& seg : occ.path) { label += seg; label += '/'; }
+            label += occ.term.getString();
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%s", label.c_str());
+            ImGui::TableSetColumnIndex(1);
+            auto c = occTermColor(occ.term.direction);
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                ImVec4(c.Value.x, c.Value.y, c.Value.z, c.Value.w));
+            ImGui::Text("%s", toString(occ.term.direction));
+            ImGui::PopStyleColor();
+        }
     }
+    ImGui::EndTable();
 }

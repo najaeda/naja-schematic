@@ -1,0 +1,43 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "native-debug",
+      "displayName": "Native Debug (Apple Clang)",
+      "description": "Debug build with system Apple Clang — standalone desktop target",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../naja-schematic-build/native-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_C_COMPILER":   "/usr/bin/cc",
+        "CMAKE_CXX_COMPILER": "/usr/bin/c++"
+      }
+    },
+    {
+      "name": "native-release",
+      "displayName": "Native Release (Apple Clang)",
+      "description": "Release build with system Apple Clang — standalone desktop target",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/../naja-schematic-build/native-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_C_COMPILER":   "/usr/bin/cc",
+        "CMAKE_CXX_COMPILER": "/usr/bin/c++"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "native-debug",
+      "displayName": "Build Native Debug",
+      "configurePreset": "native-debug"
+    },
+    {
+      "name": "native-release",
+      "displayName": "Build Native Release",
+      "configurePreset": "native-release"
+    }
+  ]
+}

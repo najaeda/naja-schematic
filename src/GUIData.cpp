@@ -1,16 +1,18 @@
 #include "GUIData.h"
+#include "Types.h"
 
 std::string GUIData::getString() const {
   std::string result = "GUIData:\n";
-  if (netlist_) {
-    result += "  NetlistTree: loaded\n";
-  } else {
-    result += "  NetlistTree: null\n";
-  }
-  if (equipotential_) {
-    result += "  Equipotential: loaded\n";
-  } else {
-    result += "  Equipotential: null\n";
-  }
+  result += netlist_ ? "  NetlistTree: loaded\n" : "  NetlistTree: null\n";
+  result += "  Equipotentials: " + std::to_string(equipotentials_.size()) + "\n";
   return result;
+}
+
+void GUIData::addEquipotential(Equipotential* eq) {
+  equipotentials_.push_back(eq);
+}
+
+void GUIData::clearEquipotentials() {
+  for (auto* eq : equipotentials_) delete eq;
+  equipotentials_.clear();
 }
