@@ -193,6 +193,7 @@ bool appFrame(AppState& state) {
   ImGui::NewFrame();
 
   // ==== Top Menu Bar ====
+  static bool aboutOpen = false;
 #ifndef __EMSCRIPTEN__
   static bool snlDialogOpen = false;
   static bool vrlDialogOpen = false;
@@ -211,7 +212,7 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Open SystemVerilog...",  "")) { svDialogOpen  = true; svFilesBuf[0]  = '\0'; }
       ImGui::Separator();
 #endif
-      if (ImGui::MenuItem("About")) ImGui::OpenPopup("About naja-schematic");
+      if (ImGui::MenuItem("About")) aboutOpen = true;
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
@@ -459,6 +460,7 @@ bool appFrame(AppState& state) {
   ImGui::End();
 
   // === About modal ===
+  if (aboutOpen) { ImGui::OpenPopup("About naja-schematic"); aboutOpen = false; }
   ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
   if (ImGui::BeginPopupModal("About naja-schematic", nullptr,
       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
