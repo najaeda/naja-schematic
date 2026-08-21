@@ -3,6 +3,7 @@
 #include <imgui.h>
 
 #include "Console.h"
+#include "DiagnosisStore.h"
 #include "INetlistProvider.h"
 
 void NetlistTree::createRootNode(
@@ -43,6 +44,11 @@ void NetlistTreeNode::getPath(NetlistTree::Path& path) const {
   getParent()->getPath(path);
 }
 
+std::string NetlistTreeNode::getPathKey() const {
+  auto* parent = getParent();
+  return parent ? parent->getPathKey() : std::string();
+}
+
 void NetlistTreeNode::render() {
   expand();
   ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow;
@@ -55,6 +61,18 @@ void NetlistTreeNode::render() {
   auto isOpen = ImGui::TreeNodeEx((void*)(intptr_t)guiID_, flags, "%s", getLabel().c_str());
   if (getColor() != 0) {
     ImGui::PopStyleColor();
+  }
+  if (ImGui::IsItemHovered()) {
+    auto diagnostics = getDiagnostics();
+    if (!diagnostics.empty()) {
+      ImGui::BeginTooltip();
+      for (const auto* d : diagnostics) {
+        ImGui::TextColored(ImColor(DiagnosisStore::colorForSeverity(d->severity)).Value,
+                           "[%s] %s", toString(d->severity), d->message.c_str());
+        if (!d->source.empty()) ImGui::TextDisabled("source: %s", d->source.c_str());
+      }
+      ImGui::EndTooltip();
+    }
   }
   if (isBitTerm()) {
     if (ImGui::BeginPopupContextItem()) {
@@ -124,6 +142,22 @@ void NetlistTreeInstanceNode::getPath(NetlistTree::Path& path) const {
     getParent()->getPath(path);
   }
   path.push_back(childID_);
+}
+
+std::string NetlistTreeInstanceNode::getPathKey() const {
+  if (isRoot()) return std::string();
+  std::string parentKey = getParent() ? getParent()->getPathKey() : std::string();
+  return parentKey.empty() ? name_ : parentKey + "/" + name_;
+}
+
+ImU32 NetlistTreeInstanceNode::getColor() const {
+  if (isRoot()) return 0;
+  return DiagnosisStore::instanceColor(getPathKey());
+}
+
+std::vector<const DiagnosisItem*> NetlistTreeInstanceNode::getDiagnostics() const {
+  if (isRoot()) return {};
+  return DiagnosisStore::instanceDiagnostics(getPathKey());
 }
 
 NetlistTreeGroupNode::NetlistTreeGroupNode(

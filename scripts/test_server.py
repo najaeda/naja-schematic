@@ -33,6 +33,32 @@ async def handle_connection(websocket):
                 }
                 print(f"📤 Sent: {json.dumps(response)}")
                 await websocket.send(json.dumps(response))
+
+                # Demo diagnosis push: a real backend (e.g. a kepler-formal/
+                # naja-scope adapter) would send this asynchronously whenever
+                # a diagnosis run completes, not just after load_root.
+                diagnosis = {
+                    "response": "diagnosis_response",
+                    "items": [
+                        {
+                            "kind": "instance",
+                            "path": ["U1"],
+                            "severity": "error",
+                            "message": "kepler-formal: SEC counterexample touches this instance",
+                            "source": "kepler-formal"
+                        },
+                        {
+                            "kind": "net",
+                            "path": [],
+                            "terminal": "A",
+                            "severity": "warning",
+                            "message": "naja-scope: fan-out changed after RTL edit",
+                            "source": "naja-scope"
+                        }
+                    ]
+                }
+                print(f"📤 Sent: {json.dumps(diagnosis)}")
+                await websocket.send(json.dumps(diagnosis))
             elif request.get("request") in {"load_instances", "load_primitives"}:
                 gui_id = request.get("gui_id", 0)
                 print(f"🔍 Load instances/primitives for gui_id: {gui_id}")

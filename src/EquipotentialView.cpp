@@ -9,6 +9,7 @@
 #include "Types.h"
 #include "SchematicView.h"
 #include "INetlistProvider.h"
+#include "DiagnosisStore.h"
 
 // ---------------------------------------------------------------------------
 // Layout geometry constants
@@ -74,6 +75,13 @@ static std::string leafSegment(const std::string& path) {
     return (pos == std::string::npos) ? path : path.substr(pos + 1);
 }
 
+// Strip a trailing bus-bit suffix ("Q[3]" -> "Q") so a pin label can be
+// matched against DiagnosisItem::terminal, which is always the base name.
+static std::string stripBusIndex(const std::string& label) {
+    auto pos = label.rfind('[');
+    return pos == std::string::npos ? label : label.substr(0, pos);
+}
+
 // Derive the gate/cell model name from the leaf instance name.
 // Naja SNL encodes assign statements as "<assign:N>".
 // Additional primitives can be detected here as the library grows.
@@ -121,6 +129,15 @@ static void buildItems(const Equipotential* eq,
 
 static float portLy(int i, int n) {
     return n > 1 ? -0.4f + 0.8f * float(i) / float(n - 1) : 0.0f;
+}
+
+// Screen-space mouse position converted to schematic world coordinates.
+static ImVec2 mouseWorldPos(const SchematicView& sv, const ImVec2& cpos) {
+    float s = sv.transform.scale;
+    ImVec2 m = ImGui::GetMousePos();
+    return ImVec2(
+        (m.x - cpos.x) / s + sv.transform.offset.x - sv.transform.screenOrigin.x / s,
+        (m.y - cpos.y) / s + sv.transform.offset.y - sv.transform.screenOrigin.y / s);
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +441,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         inst.name      = key;
         inst.modelName = modelNameFromLeaf(leafSegment(key));
         inst.color     = IM_COL32(100, 140, 200, 255);
+        inst.diagOutline = DiagnosisStore::instanceColor(key);
         g_occInfoByShapeId[inst.id] = { key, mi.designRef };
         keyToInstId[key] = inst.id;
 
@@ -453,6 +471,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
                 p.direction = ep.direction;
                 p.isInput   = !isIn;
+                p.color     = DiagnosisStore::netColor(key, ep.name);
                 inst.ports.push_back(p);
             }
         } else {
@@ -471,6 +490,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
                 p.direction = ps.direction;
                 p.isInput   = !isIn;
+                p.color     = DiagnosisStore::netColor(key, stripBusIndex(ps.name));
                 inst.ports.push_back(p);
             }
         }
@@ -530,6 +550,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 p.ly = 0.f;
                 p.direction = item.direction;
                 p.isInput   = isInput;
+                p.color     = DiagnosisStore::netColor("", stripBusIndex(item.label));
                 inst.ports.push_back(p);
                 keyToInstId["term:" + item.label + ":" + std::to_string(ei)] = inst.id;
                 // Patch the equiEnds key so wire lookup works
@@ -565,6 +586,16 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             n.dstInstance = wrs[i].instId;
             n.dstPortId   = wrs[i].portId;
             n.color       = IM_COL32(200, 200, 100, 255);
+
+            // A flagged endpoint pin colors the whole wire so a diagnosed
+            // net stands out even when the flagged pin is off-screen.
+            auto* srcInst = g_schematic.findInstanceById(n.srcInstance);
+            auto* srcPort = srcInst ? g_schematic.findPortById(*srcInst, n.srcPortId) : nullptr;
+            auto* dstInst = g_schematic.findInstanceById(n.dstInstance);
+            auto* dstPort = dstInst ? g_schematic.findPortById(*dstInst, n.dstPortId) : nullptr;
+            if (srcPort && srcPort->color != 0)      n.color = srcPort->color;
+            else if (dstPort && dstPort->color != 0) n.color = dstPort->color;
+
             g_schematic.nets.push_back(n);
         }
     }
@@ -572,6 +603,30 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     static int lastTotal = -1;
     if (totalItems != lastTotal) { g_schematic.requestFit(true); lastTotal = totalItems; }
     g_schematic.updateFitIfNeeded(cpos, inner, 60.f);
+
+    // Hover tooltip: show diagnosis messages for the instance under the cursor.
+    if (ImGui::IsMouseHoveringRect(cpos, ImVec2(cpos.x + inner.x, cpos.y + inner.y))) {
+        ImVec2 wp = mouseWorldPos(g_schematic, cpos);
+        for (const auto& inst : g_schematic.instances) {
+            if (inst.w <= 0.0f || inst.h <= 0.0f) continue; // skip zero-size term stubs
+            if (wp.x < inst.x || wp.x > inst.x + inst.w) continue;
+            if (wp.y < inst.y || wp.y > inst.y + inst.h) continue;
+            auto it = g_occInfoByShapeId.find(inst.id);
+            if (it == g_occInfoByShapeId.end()) break;
+            auto diagnostics = DiagnosisStore::instanceDiagnostics(it->second.pathKey);
+            if (!diagnostics.empty()) {
+                ImGui::BeginTooltip();
+                for (const auto* d : diagnostics) {
+                    ImGui::TextColored(ImColor(DiagnosisStore::colorForSeverity(d->severity)).Value,
+                                       "[%s] %s", toString(d->severity), d->message.c_str());
+                    if (!d->source.empty()) ImGui::TextDisabled("source: %s", d->source.c_str());
+                }
+                ImGui::EndTooltip();
+            }
+            break;
+        }
+    }
+
     g_schematic.render(dl, cpos, inner);
     ImGui::EndChild();
 

@@ -59,6 +59,8 @@ set(CORE_SOURCES
   src/NetlistTree.cpp
   src/EquipotentialView.cpp
   src/SchematicView.cpp
+  src/DiagnosisStore.cpp
+  src/DiagnosisView.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
 )

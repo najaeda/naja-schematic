@@ -17,8 +17,11 @@ using json = nlohmann::json;
 #include "Types.h"
 #include "Console.h"
 #include "EquipotentialView.h"
+#include "DiagnosisStore.h"
+#include "DiagnosisView.h"
 
 #ifndef __EMSCRIPTEN__
+#include <fstream>
 #include "LocalSNLProvider.h"
 #include "NativeFileDialog.h"
 #endif
@@ -74,6 +77,7 @@ void setupProvider(AppState& state) {
 
     if (resp == "root_response" || resp == "root_loaded") {
       Console::Log("Root node data received");
+      DiagnosisStore::clear(); // stale diagnoses reference the old design
       const auto& root = j["root"];
       if (root.contains("has_terms") || root.contains("has_primitives") || root.contains("has_instances")) {
         InstanceResponseJson data = root.get<InstanceResponseJson>();
@@ -167,6 +171,15 @@ void setupProvider(AppState& state) {
         }
       }
       EquipotentialView::applyInstanceExpansion(pathKey, ports);
+    } else if (resp == "diagnosis_response") {
+      std::vector<DiagnosisItem> items;
+      if (j.contains("items") && j["items"].is_array()) {
+        for (const auto& raw : j["items"]) {
+          items.push_back(raw.get<DiagnosisItem>());
+        }
+      }
+      Console::Log("Diagnosis received: " + std::to_string(items.size()) + " item(s)");
+      DiagnosisStore::setDiagnostics(std::move(items));
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
     }
@@ -221,6 +234,29 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Open Verilog...",        "")) { vrlDialogOpen = true; vrlFilesBuf[0] = '\0'; vrlLibertyBuf[0] = '\0'; }
       if (ImGui::MenuItem("Open SystemVerilog...",  "")) { svDialogOpen  = true; svFilesBuf[0]  = '\0'; }
       ImGui::Separator();
+      if (ImGui::MenuItem("Load Diagnosis JSON...", "")) {
+        auto files = NativeFileDialog::pickFiles("Select Diagnosis JSON", {"json"});
+        if (!files.empty()) {
+          std::ifstream ifs(files[0]);
+          if (!ifs) {
+            Console::Error("Failed to open diagnosis file: " + files[0]);
+          } else {
+            try {
+              json j; ifs >> j;
+              const auto& arr = j.contains("items") ? j["items"] : j;
+              std::vector<DiagnosisItem> items;
+              if (arr.is_array()) {
+                for (const auto& raw : arr) items.push_back(raw.get<DiagnosisItem>());
+              }
+              Console::Log("Loaded " + std::to_string(items.size()) + " diagnosis item(s) from " + files[0]);
+              DiagnosisStore::setDiagnostics(std::move(items));
+            } catch (const std::exception& e) {
+              Console::Error("Failed to parse diagnosis JSON: " + std::string(e.what()));
+            }
+          }
+        }
+      }
+      ImGui::Separator();
 #endif
       if (ImGui::MenuItem("About")) aboutOpen = true;
       ImGui::EndMenu();
@@ -231,6 +267,7 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Fit",        "Ctrl+0")) EquipotentialView::fitView();
       ImGui::Separator();
       if (ImGui::MenuItem("Clear nets", "Ctrl+K")) state.guiData->clearEquipotentials();
+      if (ImGui::MenuItem("Clear diagnosis", ""))  DiagnosisStore::clear();
       ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
@@ -455,6 +492,7 @@ bool appFrame(AppState& state) {
     {
       if (leftWidthBottom > 0.0f) {
         ImGui::BeginChild("TableLeftPanel", ImVec2(leftWidthBottom, 0), true);
+        DiagnosisView::render();
         ImGui::EndChild();
       }
       vSplitter("##VSplitBottom", leftWidthBottom);

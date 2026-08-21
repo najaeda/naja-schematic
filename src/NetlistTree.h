@@ -97,6 +97,12 @@ class NetlistTreeNode {
       return 0;
     }
     virtual void getPath(NetlistTree::Path& path) const;
+    // Slash-joined instance-name path, root excluded ("" at/above root).
+    // Matches DiagnosisItem::pathKey() and EquipotentialView's instance keys.
+    virtual std::string getPathKey() const;
+    // Diagnosis items attached to this node's path, if any (only
+    // NetlistTreeInstanceNode currently reports these).
+    virtual std::vector<const DiagnosisItem*> getDiagnostics() const { return {}; }
   protected:
     NetlistTreeNode(NetlistTree* tree);
     NetlistTreeNode(NetlistTreeNode* parent);
@@ -135,6 +141,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual DesignRef getDesignRef() const override { return designRef_; }
     virtual std::string getLabel() const override;
     virtual void getPath(NetlistTree::Path& path) const override;
+    virtual std::string getPathKey() const override;
     virtual unsigned getChildID() const override { return childID_; }
     virtual bool isLeaf() const override {
       return !(hasTerms_ || hasPrimitives_ || hasInstances_);
@@ -142,6 +149,8 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual NetlistTreeInstanceNode* getInstanceNode() const override {
       return const_cast<NetlistTreeInstanceNode*>(this);
     }
+    virtual ImU32 getColor() const override;
+    virtual std::vector<const DiagnosisItem*> getDiagnostics() const override;
   private:
     bool        isRoot_         {false};
     std::string name_           {};

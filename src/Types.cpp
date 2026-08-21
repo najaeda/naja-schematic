@@ -140,3 +140,30 @@ void from_json(const json& j, Equipotential& e) {
     }
   }
 }
+
+static DiagnosisKind diagnosisKindFromString(const std::string& s) {
+  if (s == "net") return DiagnosisKind::Net;
+  return DiagnosisKind::Instance;
+}
+
+static DiagnosisSeverity diagnosisSeverityFromString(const std::string& s) {
+  if (s == "error")   return DiagnosisSeverity::Error;
+  if (s == "warning") return DiagnosisSeverity::Warning;
+  return DiagnosisSeverity::Info;
+}
+
+void from_json(const json& j, DiagnosisItem& d) {
+  d.kind = diagnosisKindFromString(j.value("kind", std::string("instance")));
+
+  d.path.clear();
+  if (j.contains("path") && j["path"].is_array()) {
+    for (const auto& seg : j["path"]) {
+      if (seg.is_string()) d.path.push_back(seg.get<std::string>());
+    }
+  }
+
+  d.terminal = j.value("terminal", std::string(""));
+  d.severity = diagnosisSeverityFromString(j.value("severity", std::string("info")));
+  d.message  = j.value("message", std::string(""));
+  d.source   = j.value("source", std::string(""));
+}

@@ -128,6 +128,11 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
         else
             dl->AddRect(rmin, rmax, IM_COL32(0, 0, 0, 200), 4.0f, 0, 2.0f);
 
+        // Diagnosis outline drawn on top so it stays visible regardless of
+        // the partialInterface dashed border above.
+        if (inst.diagOutline != 0)
+            dl->AddRect(rmin, rmax, inst.diagOutline, 4.0f, 0, 3.5f);
+
         if (!inst.name.empty()) {
             ImVec2 textSize = ImGui::CalcTextSize(inst.name.c_str());
             ImVec2 textPos  = ImVec2((rmin.x + rmax.x) * 0.5f - textSize.x * 0.5f,
@@ -167,6 +172,8 @@ static void drawAssignInstance(ImDrawList* dl, const InstanceShape& inst,
     dl->AddTriangleFilled(tl, bl, mr, IM_COL32(80, 160, 220, 220));
     // Outline
     dl->AddTriangle(tl, bl, mr, IM_COL32(0, 0, 0, 200), 1.5f);
+    if (inst.diagOutline != 0)
+        dl->AddTriangle(tl, bl, mr, inst.diagOutline, 3.0f);
 
     // Label ("assign") near top-left of the bounding box, small and subtle
     ImVec2 lblPos = ImVec2(tl.x + 4.0f, tl.y + 4.0f);

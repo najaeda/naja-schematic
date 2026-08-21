@@ -95,6 +95,55 @@ struct Equipotential {
 };
 
 //
+// --- Diagnosis overlay types ---
+// A diagnosis_response annotates an already-loaded netlist with findings from
+// an external AI/formal-verification loop (e.g. kepler-formal, naja-scope).
+// See DiagnosisStore for how these are indexed and queried during rendering.
+//
+
+enum class DiagnosisKind {
+  Instance,
+  Net
+};
+
+// Ordered so "worse" severities compare greater (used to pick the worst
+// severity among multiple diagnostics on the same instance/net).
+enum class DiagnosisSeverity {
+  Info    = 0,
+  Warning = 1,
+  Error   = 2
+};
+
+inline const char* toString(DiagnosisSeverity s) {
+  switch (s) {
+    case DiagnosisSeverity::Info:    return "Info";
+    case DiagnosisSeverity::Warning: return "Warning";
+    case DiagnosisSeverity::Error:   return "Error";
+    default:                         return "Unknown";
+  }
+}
+
+struct DiagnosisItem {
+  DiagnosisKind             kind     = DiagnosisKind::Instance;
+  std::vector<std::string>  path;              // instance-name path, root excluded; empty = top level
+  std::string               terminal;          // pin/port base name (no bus-bit suffix); Kind::Net only
+  DiagnosisSeverity          severity = DiagnosisSeverity::Info;
+  std::string               message;
+  std::string               source;            // e.g. "kepler-formal", "naja-scope"
+
+  // Slash-joined instance path, matching NetlistTree::getPathKey() and
+  // EquipotentialView's instance-item keys.
+  std::string pathKey() const {
+    std::string out;
+    for (size_t i = 0; i < path.size(); ++i) {
+      if (i) out += '/';
+      out += path[i];
+    }
+    return out;
+  }
+};
+
+//
 // --- Renderer / UI types (kept separate from the JSON / API types above) ---
 //
 
@@ -123,6 +172,9 @@ struct InstanceShape {
     // current net).  The renderer draws a dashed border so the user knows
     // the instance can be expanded to reveal its full interface.
     bool partialInterface = false;
+    // Severity color from DiagnosisStore::instanceColor(), 0 if unflagged.
+    // Drawn as an extra outline so it doesn't fight partialInterface's dash.
+    ImU32 diagOutline = 0;
     std::vector<Port> ports;
 };
 
@@ -159,3 +211,4 @@ void from_json(const json& j, InstanceResponseJson& r);
 void from_json(const json& j, InstancesResponseJson& r);
 void from_json(const json& j, TermsResponseJson& r);
 void from_json(const json& j, Equipotential& e);
+void from_json(const json& j, DiagnosisItem& d);
