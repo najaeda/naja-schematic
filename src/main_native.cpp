@@ -46,20 +46,43 @@ int main(int argc, char* argv[]) {
 
   auto* provider = new LocalSNLProvider();
 
-  // If a path is passed on the command line, load it by extension.
-  if (argc > 1) {
-    std::string path(argv[1]);
-    std::string ext = path.size() >= 3 ? path.substr(path.rfind('.') + 1) : "";
+  // CLI usage: naja-schematic-standalone [<design>] [--diagnosis <path>]
+  // <design> is loaded by extension (.sv/.v/otherwise-assumed-SNL-directory);
+  // --diagnosis pre-loads a diagnosis_response-shaped JSON so an external
+  // caller (a script, or naja-agent's skill, after an edit-check cycle) can
+  // open a fully annotated view in one command instead of requiring a human
+  // to click through File > Open .../Load Diagnosis JSON... by hand.
+  std::string designPath;
+  std::string diagnosisPath;
+  for (int i = 1; i < argc; ++i) {
+    std::string arg(argv[i]);
+    if (arg == "--diagnosis" && i + 1 < argc) {
+      diagnosisPath = argv[++i];
+    } else if (designPath.empty()) {
+      designPath = arg;
+    }
+  }
+
+  if (!designPath.empty()) {
+    std::string ext = designPath.size() >= 3 ? designPath.substr(designPath.rfind('.') + 1) : "";
     if (ext == "sv")
-      provider->loadSystemVerilog({path});
+      provider->loadSystemVerilog({designPath});
     else if (ext == "v")
-      provider->loadVerilog({path}, {});
+      provider->loadVerilog({designPath}, {});
     else
-      provider->loadSNL(path); // assume SNL directory
+      provider->loadSNL(designPath); // assume SNL directory
   }
 
   state.provider = provider;
   setupProvider(state);
+
+  // Load any requested diagnosis only after setupProvider() has completed
+  // its synchronous root-load handshake (provider->start() at the end of
+  // setupProvider fires it, which clears any previously-set diagnosis) --
+  // otherwise the diagnosis we just loaded would be wiped immediately.
+  if (!diagnosisPath.empty()) {
+    loadDiagnosisFile(diagnosisPath);
+  }
 
   while (appFrame(state)) {
     // loop until the window is closed

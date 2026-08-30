@@ -2,6 +2,7 @@
 
 #include <SDL.h>
 #include <SDL_opengl.h>
+#include <string>
 
 class INetlistProvider;
 class GUIData;
@@ -22,3 +23,18 @@ void setupProvider(AppState& state);
 // One frame: poll events, build ImGui, render.
 // Returns false when the application should quit.
 bool appFrame(AppState& state);
+
+#ifndef __EMSCRIPTEN__
+// Native only: load a diagnosis_response-shaped JSON file (a top-level
+// {"items": [...]} object, or a bare array) from disk and install it into
+// DiagnosisStore, replacing whatever diagnosis set is currently loaded.
+// Shared by the "File > Load Diagnosis JSON..." menu action and by main()'s
+// optional --diagnosis command-line flag, so an external caller (a script,
+// or naja-agent's skill) can open a fully annotated view in one shot instead
+// of requiring a human to click through the file picker.
+// Must be called after setupProvider() has returned, since a fresh
+// root_response/root_loaded clears any diagnosis set already installed.
+// Returns true on success (logs the reason to Console and returns false on
+// a missing/unreadable/malformed file).
+bool loadDiagnosisFile(const std::string& path);
+#endif

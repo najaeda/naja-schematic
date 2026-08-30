@@ -196,6 +196,35 @@ void setupProvider(AppState& state) {
   state.provider->start();
 }
 
+#ifndef __EMSCRIPTEN__
+// ---------------------------------------------------------------------------
+// Native diagnosis-file loading — shared by the menu action and by main()'s
+// --diagnosis flag. See AppLogic.h for the calling contract.
+// ---------------------------------------------------------------------------
+
+bool loadDiagnosisFile(const std::string& path) {
+  std::ifstream ifs(path);
+  if (!ifs) {
+    Console::Error("Failed to open diagnosis file: " + path);
+    return false;
+  }
+  try {
+    json j; ifs >> j;
+    const auto& arr = j.contains("items") ? j["items"] : j;
+    std::vector<DiagnosisItem> items;
+    if (arr.is_array()) {
+      for (const auto& raw : arr) items.push_back(raw.get<DiagnosisItem>());
+    }
+    Console::Log("Loaded " + std::to_string(items.size()) + " diagnosis item(s) from " + path);
+    DiagnosisStore::setDiagnostics(std::move(items));
+    return true;
+  } catch (const std::exception& e) {
+    Console::Error("Failed to parse diagnosis JSON: " + std::string(e.what()));
+    return false;
+  }
+}
+#endif // __EMSCRIPTEN__
+
 // ---------------------------------------------------------------------------
 // Per-frame rendering — identical for both WASM and native entry points.
 // ---------------------------------------------------------------------------
@@ -237,23 +266,7 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Load Diagnosis JSON...", "")) {
         auto files = NativeFileDialog::pickFiles("Select Diagnosis JSON", {"json"});
         if (!files.empty()) {
-          std::ifstream ifs(files[0]);
-          if (!ifs) {
-            Console::Error("Failed to open diagnosis file: " + files[0]);
-          } else {
-            try {
-              json j; ifs >> j;
-              const auto& arr = j.contains("items") ? j["items"] : j;
-              std::vector<DiagnosisItem> items;
-              if (arr.is_array()) {
-                for (const auto& raw : arr) items.push_back(raw.get<DiagnosisItem>());
-              }
-              Console::Log("Loaded " + std::to_string(items.size()) + " diagnosis item(s) from " + files[0]);
-              DiagnosisStore::setDiagnostics(std::move(items));
-            } catch (const std::exception& e) {
-              Console::Error("Failed to parse diagnosis JSON: " + std::string(e.what()));
-            }
-          }
+          loadDiagnosisFile(files[0]);
         }
       }
       ImGui::Separator();

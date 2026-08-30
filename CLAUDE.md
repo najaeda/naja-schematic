@@ -40,10 +40,18 @@ was picked for netlist representation (kepler-formal already speaks it, so no
 netlist-level translation is needed — only a report-level one).
 
 **Integration surface (implemented):** the `diagnosis_response` message type
-and its rendering — see "Diagnosis overlay" below. What's still missing
-upstream: neither kepler-formal nor naja-scope emits this JSON today, so an
-adapter that turns kepler-formal's log/text output into `diagnosis_response`
-items is the remaining piece to actually close the loop.
+and its rendering — see "Diagnosis overlay" below — plus, for the native
+standalone build, a `--diagnosis <path>` CLI flag (`main_native.cpp`) that
+loads a design and a diagnosis JSON in one command, so an external caller
+(a script, or naja-agent's skill) can open a fully annotated view without a
+human clicking through File > Open .../Load Diagnosis JSON... by hand. This
+closes the "opening a view" half of the loop for native builds; the WASM/
+browser build still has no equivalent one-shot launch path (see "Wire
+protocol" below — it depends on a live server + browser tab already being
+connected). What's still missing upstream either way: neither kepler-formal
+nor naja-scope emits `diagnosis_response` JSON today, so an adapter that
+turns kepler-formal's log/text output into `diagnosis_response` items is the
+remaining piece to actually produce the file this flag consumes.
 
 ## Building
 
@@ -68,10 +76,11 @@ this target is macOS-only as currently written.
 
 Run directly, optionally with a netlist to load (dispatched by extension —
 `.v` → Verilog, `.sv` → SystemVerilog via slang, otherwise treated as an SNL
-directory):
+directory) and/or a diagnosis JSON to pre-load (`--diagnosis <path>`, either
+order, both optional — see `loadDiagnosisFile()` in `AppLogic.cpp`):
 
 ```bash
-../naja-schematic-build/native-debug/naja-schematic-standalone [path/to/netlist]
+../naja-schematic-build/native-debug/naja-schematic-standalone [path/to/netlist] [--diagnosis path/to/diagnosis.json]
 ```
 
 ### WASM target (`naja-schematic`)
