@@ -219,7 +219,7 @@ void LocalSNLProvider::loadVerilog(
 
     auto* userLib = NLLibrary::create(db_, NLName("work"));
     SNLVRLConstructor::Config cfg;
-    cfg.allowUnknownDesigns_ = !libertyFiles.empty();
+    cfg.blackboxUnknownModules_ = !libertyFiles.empty();
     SNLVRLConstructor vrlCtor(userLib);
     vrlCtor.config_ = cfg;
     std::vector<std::filesystem::path> paths(verilogFiles.begin(), verilogFiles.end());
