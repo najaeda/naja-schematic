@@ -11,6 +11,7 @@
 // naja core
 #include "NLUniverse.h"
 #include "NLDB.h"
+#include "NLDB0.h"
 #include "NLLibrary.h"
 // naja SNL
 #include "SNLDesign.h"
@@ -54,6 +55,16 @@ static std::string designName(const SNLDesign* d) {
 
 static std::string instanceName(const SNLInstance* i) {
   return i->getString();
+}
+
+static bool hasVisiblePrimitiveInstances(const SNLDesign* d) {
+  for (auto* inst : d->getPrimitiveInstances()) {
+    auto* model = inst->getModel();
+    if (!(model && NLDB0::isAssign(model))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static std::string termName(const SNLBitTerm* t) {
@@ -359,7 +370,7 @@ std::string LocalSNLProvider::buildRootResponse() const {
         {"design_id",  static_cast<unsigned>(top->getID())}
       }},
       {"has_terms",      !top->getTerms().empty()},
-      {"has_primitives", !top->getPrimitiveInstances().empty()},
+      {"has_primitives", hasVisiblePrimitiveInstances(top)},
       {"has_instances",  !top->getNonPrimitiveInstances().empty()}
     };
   }
@@ -388,6 +399,9 @@ std::string LocalSNLProvider::buildInstancesResponse(
 
       for (auto* inst : instances) {
         auto* model = inst->getModel();
+        if (model && NLDB0::isAssign(model)) {
+          continue;
+        }
         children.push_back({
           {"name",       instanceName(inst)},
           {"model_name", model ? designName(model) : ""},
@@ -398,7 +412,7 @@ std::string LocalSNLProvider::buildInstancesResponse(
             {"design_id",  model ? static_cast<unsigned>(model->getID()) : 0u}
           }},
           {"has_terms",      model && !model->getTerms().empty()},
-          {"has_primitives", model && !model->getPrimitiveInstances().empty()},
+          {"has_primitives", model && hasVisiblePrimitiveInstances(model)},
           {"has_instances",  model && !model->getNonPrimitiveInstances().empty()}
         });
       }

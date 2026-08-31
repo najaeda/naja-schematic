@@ -28,6 +28,10 @@ def get_path(top, instance_ids):
         naja_path = naja.SNLPath(naja_path, instance)
     return naja_path
 
+def has_visible_primitive_instances(design):
+    return any(not instance.getModel().isAssign()
+               for instance in design.getPrimitiveInstances())
+
 def serialize_model(model, child_id, name):
     return {
         "name": name,
@@ -39,7 +43,7 @@ def serialize_model(model, child_id, name):
             "design_id": model.getID(),
         },
         "has_terms": model.hasTerms(),
-        "has_primitives": model.hasPrimitiveInstances(),
+        "has_primitives": has_visible_primitive_instances(model),
         "has_instances": model.hasNonPrimitiveInstances(),
     }
 
@@ -106,7 +110,7 @@ async def handle_connection(websocket):
                                 "design_id": design.getID(),
                             },
                             "has_terms": design.hasTerms(),
-                            "has_primitives": design.hasPrimitiveInstances(),
+                            "has_primitives": has_visible_primitive_instances(design),
                             "has_instances": design.hasNonPrimitiveInstances()
                         }
                     }))
@@ -119,6 +123,8 @@ async def handle_connection(websocket):
 
                     for instance in instances:
                         model = instance.getModel()
+                        if model.isAssign():
+                            continue
                         children.append(serialize_model(model, instance.getID(), instance.getName()))
 
                     response_type = req_type.replace("load_", "") + "_response"
