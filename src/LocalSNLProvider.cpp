@@ -502,7 +502,7 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
       auto* bitTerm = resolveBitTerm(topDesign);
       if (!bitTerm) return empty.dump();
 
-      SNLEquipotential equi(bitTerm);
+      SNLEquipotential equi(bitTerm, SNLEquipotential::Mode::TraverseAssigns);
 
       json terms = json::array();
       for (auto* bt : equi.getTermsSet()) terms.push_back(bitTermJson(bt));
@@ -545,7 +545,8 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
       auto* instTerm = tailInst->getInstTerm(bitTerm);
       if (!instTerm) return empty.dump();
 
-      SNLEquipotential equi(SNLOccurrence(snlPath.getHeadPath(), instTerm));
+      SNLEquipotential equi(SNLOccurrence(snlPath.getHeadPath(), instTerm),
+                            SNLEquipotential::Mode::TraverseAssigns);
 
       json terms = json::array();
       for (auto* bt : equi.getTermsSet()) terms.push_back(bitTermJson(bt));

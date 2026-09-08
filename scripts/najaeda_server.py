@@ -185,7 +185,8 @@ async def handle_connection(websocket):
                     head_path = path.getHeadPath()
                     start_point = naja.SNLOccurrence(head_path, inst_term)
                 print(f"🔍 Start point: {start_point}")
-                equipotential = naja.SNLEquipotential(start_point)
+                equipotential = naja.SNLEquipotential(
+                    start_point, mode=naja.SNLEquipotential.Mode.TraverseAssigns)
                 occurrences = []
                 terms = []
                 for occ in equipotential.getInstTermOccurrences():
