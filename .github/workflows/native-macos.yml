@@ -8,7 +8,11 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-14's default Xcode (15.4) has an incomplete C++20 <ranges> lib
+    # (missing std::views::join, construct_at issues) that thirdparty/naja's
+    # slang dependency needs — matches thirdparty/naja's own CI, which only
+    # targets macos-15/macos-26 for the same reason.
+    runs-on: macos-15
 
     steps:
       - name: Checkout code
