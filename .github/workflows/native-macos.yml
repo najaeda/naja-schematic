@@ -1,0 +1,29 @@
+name: Native macOS Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: brew install sdl2 ninja
+
+      - name: Configure (native-debug preset)
+        run: cmake --preset native-debug
+
+      - name: Build
+        run: cmake --build --preset native-debug
+
+      - name: Check binary exists
+        run: file ../naja-schematic-build/native-debug/naja-schematic-standalone

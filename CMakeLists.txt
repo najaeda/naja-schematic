@@ -127,10 +127,18 @@ else()
   find_package(SDL2 REQUIRED)
   find_package(OpenGL REQUIRED)
 
+  if(APPLE)
+    set(PLATFORM_FILE_DIALOG_SOURCE src/NativeFileDialog.mm)
+    set(PLATFORM_FILE_DIALOG_LIBS "-framework Cocoa")
+  else()
+    set(PLATFORM_FILE_DIALOG_SOURCE src/NativeFileDialogLinux.cpp)
+    set(PLATFORM_FILE_DIALOG_LIBS "")
+  endif()
+
   add_executable(naja-schematic-standalone
     ${CORE_SOURCES}
     src/LocalSNLProvider.cpp
-    src/NativeFileDialog.mm
+    ${PLATFORM_FILE_DIALOG_SOURCE}
     src/main_native.cpp
   )
 
@@ -143,7 +151,7 @@ else()
     naja_snl_liberty
     naja_snl_systemverilog
     naja_nl_dump
-    "-framework Cocoa"
+    ${PLATFORM_FILE_DIALOG_LIBS}
   )
 
   target_compile_definitions(naja-schematic-standalone PRIVATE

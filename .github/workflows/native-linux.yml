@@ -1,0 +1,36 @@
+name: Native Linux Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -yq
+          sudo apt-get install -yq --no-install-recommends \
+            ninja-build pkg-config \
+            bison flex libfl-dev \
+            libboost-dev capnproto libcapnp-dev libtbb-dev \
+            libsdl2-dev libgl1-mesa-dev libglu1-mesa-dev \
+            python3-dev zenity
+
+      - name: Configure
+        run: cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-linux --parallel "$(nproc)"
+
+      - name: Check binary exists
+        run: file build-linux/naja-schematic-standalone

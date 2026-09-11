@@ -71,8 +71,19 @@ cmake --build --preset native-debug
 
 Requires SDL2 and OpenGL (e.g. `brew install sdl2`). Pulls in `thirdparty/naja`
 as a CMake subdirectory (`naja_nl`, `naja_snl_verilog`, `naja_snl_liberty`,
-`naja_snl_systemverilog`, `naja_nl_dump`). `NativeFileDialog.mm` uses Cocoa, so
-this target is macOS-only as currently written.
+`naja_snl_systemverilog`, `naja_nl_dump`).
+
+The native target also builds on Linux (see `.github/workflows/native-linux.yml`
+for the exact apt package list — boost/capnproto/tbb/SDL2/OpenGL dev headers
+plus `zenity`), but not via `CMakePresets.json`: those presets pin
+`/usr/bin/cc`/`/usr/bin/c++` specifically to dodge Emscripten-on-PATH
+auto-detection on macOS (see WASM section below) and aren't meant for other
+platforms — invoke `cmake` directly instead
+(`cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug`). File-picker
+backend is chosen per-platform in `CMakeLists.txt`: `NativeFileDialog.mm`
+(Cocoa/`NSOpenPanel`) on `APPLE`, `NativeFileDialogLinux.cpp` (shells out to
+`zenity`) otherwise — both implement the same `NativeFileDialog.h` interface.
+Windows has no backend and isn't a supported target.
 
 Run directly, optionally with a netlist to load (dispatched by extension —
 `.v` → Verilog, `.sv` → SystemVerilog via slang, otherwise treated as an SNL
