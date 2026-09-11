@@ -1,5 +1,9 @@
 # naja-schematic
 
+[![Native macOS Build](https://github.com/najaeda/naja-schematic/actions/workflows/native-macos.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/native-macos.yml)
+[![Native Linux Build](https://github.com/najaeda/naja-schematic/actions/workflows/native-linux.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/native-linux.yml)
+[![Emscripten Build](https://github.com/najaeda/naja-schematic/actions/workflows/emscripten.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/emscripten.yml)
+
 A C++20, [Dear ImGui](https://github.com/ocornut/imgui)-based netlist
 viewer/schematic browser for the [naja](https://github.com/najaeda/naja) SNL
 netlist data model. It builds to two targets from the same core sources: a
@@ -14,7 +18,7 @@ native desktop app and a WASM app that runs in a browser or a VSCode webview.
   diagnostics list panel
 - Loads Verilog, SystemVerilog, or pre-built SNL netlists natively; the
   browser build talks to a Python netlist server over WebSocket
-- Runs natively on macOS, or anywhere with a browser/VSCode via WASM
+- Runs natively on macOS or Linux, or anywhere with a browser/VSCode via WASM
 
 ## Building
 
@@ -28,7 +32,11 @@ git submodule update --init --recursive
 
 ### Native standalone target (`naja-schematic-standalone`)
 
-macOS only (uses Cocoa for native file dialogs). Requires SDL2 and OpenGL:
+Builds on macOS and Linux. Requires SDL2 and OpenGL, plus a native file-picker
+backend (Cocoa on macOS, `zenity` on Linux — see `CLAUDE.md` for the full
+Linux dependency list).
+
+On macOS:
 
 ```bash
 brew install sdl2
@@ -45,13 +53,21 @@ cmake --build --preset native-debug
 The build directory lives outside the repo, at
 `../naja-schematic-build/<preset>`.
 
-Run, optionally with a netlist to load (dispatched by extension — `.v` →
-Verilog, `.sv` → SystemVerilog, otherwise treated as an SNL directory)
-and/or a diagnosis JSON to pre-load:
+On Linux, invoke CMake directly instead (the presets are macOS-specific):
 
 ```bash
-../naja-schematic-build/native-debug/naja-schematic-standalone \
-    [path/to/netlist] [--diagnosis path/to/diagnosis.json]
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+```
+
+Run (`../naja-schematic-build/native-debug/naja-schematic-standalone` on
+macOS, `build/naja-schematic-standalone` on Linux), optionally with a
+netlist to load (dispatched by extension — `.v` → Verilog, `.sv` →
+SystemVerilog, otherwise treated as an SNL directory) and/or a diagnosis
+JSON to pre-load:
+
+```bash
+naja-schematic-standalone [path/to/netlist] [--diagnosis path/to/diagnosis.json]
 ```
 
 `<netlist>` and `--diagnosis <path>` are both optional and order-independent.
