@@ -14,11 +14,22 @@ struct AppState {
   GUIData*          guiData   {nullptr};
   INetlistProvider* provider  {nullptr};
   bool              connected {false};
+  // One-shot flags: set by the message handler when a source_response /
+  // diagnosis_response arrives, consumed (and cleared) by appFrame() to
+  // auto-select the matching bottom-panel tab for that one frame.
+  bool              focusSourceTab    {false};
+  bool              focusDiagnosisTab {false};
 };
 
 // Wire all provider callbacks (on_open, on_message, on_close, on_error)
 // and call provider->start().  Must be called once after SDL/GL/ImGui init.
 void setupProvider(AppState& state);
+
+// Load the app's UI font (embedded DroidSans, larger and crisper than
+// ImGui's default bitmap font). Must be called once after ImGui::CreateContext()
+// and before the backend Init() calls (ImGui_ImplOpenGL3_Init() builds the
+// font atlas texture from whatever is registered at that point).
+void setupFonts();
 
 // One frame: poll events, build ImGui, render.
 // Returns false when the application should quit.

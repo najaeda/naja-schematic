@@ -3,3 +3,8 @@ build*
 *.swp
 .DS_Store
 .vscode/settings.json
+imgui.ini
+
+# Private, local-only working notes (never shared/committed).
+notes/
+naja_sv_diagnostics.log

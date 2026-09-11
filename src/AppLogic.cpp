@@ -19,12 +19,27 @@ using json = nlohmann::json;
 #include "EquipotentialView.h"
 #include "DiagnosisStore.h"
 #include "DiagnosisView.h"
+#include "SourceStore.h"
+#include "SourceView.h"
+#include "DroidSansFont.h"
 
 #ifndef __EMSCRIPTEN__
 #include <fstream>
 #include "LocalSNLProvider.h"
 #include "NativeFileDialog.h"
 #endif
+
+// Base UI font size in pixels. ImGui's built-in fallback (Proggy Clean, ~13px
+// bitmap font) reads as tiny/blurry on most displays; DroidSans at this size
+// is crisp and legible for both chrome (menus, panels) and schematic labels,
+// which scale off of it (see SchematicView's labelFontSize()).
+static constexpr float kBaseFontSizePx = 17.0f;
+
+void setupFonts() {
+  ImGuiIO& io = ImGui::GetIO();
+  io.Fonts->AddFontFromMemoryCompressedTTF(
+      DroidSans_compressed_data, DroidSans_compressed_size, kBaseFontSizePx);
+}
 
 // ---------------------------------------------------------------------------
 // Provider setup — identical message dispatch for both WASM and native modes.
@@ -83,7 +98,8 @@ void setupProvider(AppState& state) {
         InstanceResponseJson data = root.get<InstanceResponseJson>();
         state.guiData->netlist_->createRootNode(
           data.name, data.design_ref,
-          data.has_terms, data.has_primitives, data.has_instances);
+          data.has_terms, data.has_primitives, data.has_instances,
+          data.source_loc);
       } else {
         DesignRef designRef{};
         if (root.contains("design_ref")) {
@@ -132,7 +148,8 @@ void setupProvider(AppState& state) {
       for (auto& instance : children) {
         parent->createInstanceNode(
           instance.name, instance.model_name, instance.child_id, instance.design_ref,
-          instance.has_terms, instance.has_primitives, instance.has_instances);
+          instance.has_terms, instance.has_primitives, instance.has_instances,
+          instance.source_loc);
       }
     } else if (resp == "terms_response") {
       TermsResponseJson data = j.get<TermsResponseJson>();
@@ -171,6 +188,53 @@ void setupProvider(AppState& state) {
         }
       }
       EquipotentialView::applyInstanceExpansion(pathKey, ports);
+    } else if (resp == "instance_internals_response") {
+      std::string pathKey = j.value("path_key", std::string(""));
+      EquipotentialView::InstanceInternals data;
+      if (j.contains("children") && j["children"].is_array()) {
+        for (const auto& c : j["children"]) {
+          EquipotentialView::InstanceChild ic;
+          ic.name    = c.value("name", std::string(""));
+          ic.childId = c.value("child_id", 0u);
+          if (c.contains("design_ref"))
+            ic.designRef = c["design_ref"].get<DesignRef>();
+          ic.hasInstances = c.value("has_instances", false) || c.value("has_primitives", false);
+          data.children.push_back(std::move(ic));
+        }
+      }
+      if (j.contains("nets") && j["nets"].is_array()) {
+        for (const auto& n : j["nets"]) {
+          EquipotentialView::InternalNet in;
+          in.name = n.value("name", std::string(""));
+          if (n.contains("bit") && !n["bit"].is_null()) in.bit = n["bit"].get<int>();
+          if (n.contains("pins") && n["pins"].is_array()) {
+            for (const auto& p : n["pins"]) {
+              EquipotentialView::InternalPin ip;
+              ip.name    = p.value("name", std::string(""));
+              int dirInt = p.value("direction", 0);
+              ip.direction = dirInt == 1 ? Direction::Output
+                           : dirInt == 2 ? Direction::Inout
+                                         : Direction::Input;
+              if (p.contains("bit") && !p["bit"].is_null()) ip.bit = p["bit"].get<int>();
+              if (p.contains("inst_id") && !p["inst_id"].is_null())
+                ip.instChildId = p["inst_id"].get<unsigned>();
+              in.pins.push_back(std::move(ip));
+            }
+          }
+          data.nets.push_back(std::move(in));
+        }
+      }
+      EquipotentialView::applyInstanceInternals(pathKey, data);
+    } else if (resp == "source_response") {
+      std::string file = j.value("file", std::string(""));
+      bool found = j.value("found", false);
+      if (found) {
+        SourceStore::setSource(file, j.value("line", 0), j.value("text", std::string("")));
+        state.focusSourceTab = true;
+        Console::Log("Loaded RTL source: " + file);
+      } else {
+        Console::Error("Failed to load RTL source: " + file);
+      }
     } else if (resp == "diagnosis_response") {
       std::vector<DiagnosisItem> items;
       if (j.contains("items") && j["items"].is_array()) {
@@ -180,6 +244,7 @@ void setupProvider(AppState& state) {
       }
       Console::Log("Diagnosis received: " + std::to_string(items.size()) + " item(s)");
       DiagnosisStore::setDiagnostics(std::move(items));
+      state.focusDiagnosisTab = true;
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
     }
@@ -254,22 +319,24 @@ bool appFrame(AppState& state) {
   static char vrlFilesBuf[8192]   = {};
   static char vrlLibertyBuf[4096] = {};
   static char svFilesBuf[8192]    = {};
+  static char svTopBuf[256]       = {};
 #endif
 
   if (ImGui::BeginMainMenuBar()) {
     if (ImGui::BeginMenu("File")) {
 #ifndef __EMSCRIPTEN__
-      if (ImGui::MenuItem("Open SNL...",            "")) { snlDialogOpen = true; snlPathBuf[0] = '\0'; }
+      if (ImGui::MenuItem("Open naja-if...",        "")) { snlDialogOpen = true; snlPathBuf[0] = '\0'; }
       if (ImGui::MenuItem("Open Verilog...",        "")) { vrlDialogOpen = true; vrlFilesBuf[0] = '\0'; vrlLibertyBuf[0] = '\0'; }
-      if (ImGui::MenuItem("Open SystemVerilog...",  "")) { svDialogOpen  = true; svFilesBuf[0]  = '\0'; }
+      if (ImGui::MenuItem("Open SystemVerilog...",  "")) { svDialogOpen  = true; svFilesBuf[0]  = '\0'; svTopBuf[0] = '\0'; }
       ImGui::Separator();
-      if (ImGui::MenuItem("Load Diagnosis JSON...", "")) {
-        auto files = NativeFileDialog::pickFiles("Select Diagnosis JSON", {"json"});
-        if (!files.empty()) {
-          loadDiagnosisFile(files[0]);
-        }
-      }
-      ImGui::Separator();
+      // Diagnosis UI temporarily hidden — see DiagnosisStore.cpp kDiagnosisUIHidden.
+      // if (ImGui::MenuItem("Load Diagnosis JSON...", "")) {
+      //   auto files = NativeFileDialog::pickFiles("Select Diagnosis JSON", {"json"});
+      //   if (!files.empty()) {
+      //     loadDiagnosisFile(files[0]);
+      //   }
+      // }
+      // ImGui::Separator();
 #endif
       if (ImGui::MenuItem("About")) aboutOpen = true;
       ImGui::EndMenu();
@@ -280,7 +347,8 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Fit",        "Ctrl+0")) EquipotentialView::fitView();
       ImGui::Separator();
       if (ImGui::MenuItem("Clear nets", "Ctrl+K")) state.guiData->clearEquipotentials();
-      if (ImGui::MenuItem("Clear diagnosis", ""))  DiagnosisStore::clear();
+      // Diagnosis UI temporarily hidden — see DiagnosisStore.cpp kDiagnosisUIHidden.
+      // if (ImGui::MenuItem("Clear diagnosis", ""))  DiagnosisStore::clear();
       ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
@@ -325,14 +393,14 @@ bool appFrame(AppState& state) {
 
   auto* localProvider = dynamic_cast<LocalSNLProvider*>(state.provider);
 
-  // ==== Open SNL dialog ====
-  if (snlDialogOpen) { ImGui::OpenPopup("Open SNL"); snlDialogOpen = false; }
+  // ==== Open naja-if dialog ====
+  if (snlDialogOpen) { ImGui::OpenPopup("Open naja-if"); snlDialogOpen = false; }
   ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Always);
-  if (ImGui::BeginPopupModal("Open SNL", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("SNL directory path:");
+  if (ImGui::BeginPopupModal("Open naja-if", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("naja-if directory path:");
     ImGui::SameLine();
     if (ImGui::SmallButton("Browse...##snl")) {
-      auto dir = NativeFileDialog::pickDirectory("Select SNL Directory");
+      auto dir = NativeFileDialog::pickDirectory("Select naja-if Directory");
       if (!dir.empty()) {
         strncpy(snlPathBuf, dir.c_str(), sizeof(snlPathBuf) - 1);
         snlPathBuf[sizeof(snlPathBuf) - 1] = '\0';
@@ -395,14 +463,18 @@ bool appFrame(AppState& state) {
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("Browse Flist...")) {
-      auto files = NativeFileDialog::pickFiles("Select Flist", {"f", "flist"});
+      auto files = NativeFileDialog::pickFiles("Select Flist");
       appendPaths(svFilesBuf, sizeof(svFilesBuf), files);
     }
     ImGui::InputTextMultiline("##svfiles", svFilesBuf, sizeof(svFilesBuf), ImVec2(-1, 140));
     ImGui::Spacing();
+    ImGui::Text("Top module (optional -- overrides auto-detection):");
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##svtop", svTopBuf, sizeof(svTopBuf));
+    ImGui::Spacing();
     if (ImGui::Button("Open", ImVec2(120,0)) && svFilesBuf[0]) {
       if (localProvider) {
-        localProvider->loadSystemVerilog(splitLines(svFilesBuf));
+        localProvider->loadSystemVerilog(splitLines(svFilesBuf), svTopBuf);
         reloadNetlist();
       }
       ImGui::CloseCurrentPopup();
@@ -426,7 +498,6 @@ bool appFrame(AppState& state) {
   ImGui::Begin("MainWindow", nullptr, window_flags);
   {
     static float leftWidthTop    = 300.0f;
-    static float leftWidthBottom = 300.0f;
     static float schematicHeight = -1.0f;
     const float  minPanelW = 0.0f;
     const float  maxPanelW = io.DisplaySize.x - 100.0f;
@@ -499,24 +570,36 @@ bool appFrame(AppState& state) {
     if (ImGui::IsItemHovered() || ImGui::IsItemActive())
       ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
 
-    // === Bottom row: left panel | vsplitter | table ===
+    // === Bottom row: Table / Diagnostics / RTL Source tabs ===
     ImGui::BeginChild("TableRow", ImVec2(0, 0), false,
       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     {
-      if (leftWidthBottom > 0.0f) {
-        ImGui::BeginChild("TableLeftPanel", ImVec2(leftWidthBottom, 0), true);
-        DiagnosisView::render();
-        ImGui::EndChild();
-      }
-      vSplitter("##VSplitBottom", leftWidthBottom);
-      ImGui::SameLine();
       ImGui::BeginChild("TablePanel", ImVec2(0, 0), true,
         ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_HorizontalScrollbar);
       {
-        const auto& eqs = state.guiData->equipotentials_;
-        std::vector<Equipotential*> lastEquip;
-        if (!eqs.empty()) lastEquip.push_back(eqs.back());
-        EquipotentialView::renderTable(lastEquip);
+        if (ImGui::BeginTabBar("##BottomTabs")) {
+          if (ImGui::BeginTabItem("Equipotential")) {
+            const auto& eqs = state.guiData->equipotentials_;
+            std::vector<Equipotential*> lastEquip;
+            if (!eqs.empty()) lastEquip.push_back(eqs.back());
+            EquipotentialView::renderTable(lastEquip);
+            ImGui::EndTabItem();
+          }
+          // Diagnosis UI temporarily hidden — see DiagnosisStore.cpp kDiagnosisUIHidden.
+          // ImGuiTabItemFlags diagFlags = state.focusDiagnosisTab ? ImGuiTabItemFlags_SetSelected : 0;
+          // if (ImGui::BeginTabItem("Diagnostics", nullptr, diagFlags)) {
+          //   DiagnosisView::render();
+          //   ImGui::EndTabItem();
+          // }
+          ImGuiTabItemFlags srcFlags = state.focusSourceTab ? ImGuiTabItemFlags_SetSelected : 0;
+          if (ImGui::BeginTabItem("RTL Source", nullptr, srcFlags)) {
+            SourceView::render();
+            ImGui::EndTabItem();
+          }
+          state.focusDiagnosisTab = false;
+          state.focusSourceTab    = false;
+          ImGui::EndTabBar();
+        }
       }
       ImGui::EndChild();
     }

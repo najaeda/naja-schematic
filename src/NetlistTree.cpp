@@ -11,8 +11,9 @@ void NetlistTree::createRootNode(
   const DesignRef& design_ref,
   bool hasTerms,
   bool hasPrimitives,
-  bool hasInstances) {
-  root_ = new NetlistTreeInstanceNode(this, name, design_ref, hasTerms, hasPrimitives, hasInstances);
+  bool hasInstances,
+  const std::optional<SourceLoc>& sourceLoc) {
+  root_ = new NetlistTreeInstanceNode(this, name, design_ref, hasTerms, hasPrimitives, hasInstances, sourceLoc);
 }
 
 void NetlistTree::render() {
@@ -85,6 +86,30 @@ void NetlistTreeNode::render() {
       }
       ImGui::EndPopup();
     }
+  } else if (isBus()) {
+    if (ImGui::BeginPopupContextItem()) {
+      if (ImGui::MenuItem("Show Bus Equipotential")) {
+        NetlistTree::Path path;
+        getPath(path);
+        for (int bit : busBits()) {
+          getTree()->sendLoadEquipotential(
+            path,
+            NetlistTree::TermID{getChildID(), true, bit});
+        }
+      }
+      ImGui::EndPopup();
+    }
+  } else if (auto loc = getSourceLoc()) {
+    if (ImGui::BeginPopupContextItem()) {
+      if (ImGui::MenuItem("Show RTL Source")) {
+        json req;
+        req["request"] = "load_source";
+        req["file"]    = loc->file;
+        req["line"]    = loc->line;
+        getTree()->getProvider()->send(req.dump());
+      }
+      ImGui::EndPopup();
+    }
   }
   if (isOpen and not isLeaf()) {
     if (children_ != nullptr) {
@@ -112,11 +137,13 @@ NetlistTreeInstanceNode::NetlistTreeInstanceNode(
     const DesignRef& designRef,
     bool hasTerms,
     bool hasPrimitives,
-    bool hasInstances):
+    bool hasInstances,
+    const std::optional<SourceLoc>& sourceLoc):
     NetlistTreeNode(tree),
     isRoot_(true), name_(name),
     childID_(0),designRef_(designRef),
-    hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances)
+    hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances),
+    sourceLoc_(sourceLoc)
 {}
 
 NetlistTreeInstanceNode::NetlistTreeInstanceNode(
@@ -127,11 +154,13 @@ NetlistTreeInstanceNode::NetlistTreeInstanceNode(
     const DesignRef& designRef,
     bool hasTerms,
     bool hasPrimitives,
-    bool hasInstances):
+    bool hasInstances,
+    const std::optional<SourceLoc>& sourceLoc):
     NetlistTreeNode(parent),
     isRoot_(false), name_(name), modelName_(modelName),
     childID_(childID), designRef_(designRef),
-    hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances)
+    hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances),
+    sourceLoc_(sourceLoc)
 {}
 
 void NetlistTreeInstanceNode::getPath(NetlistTree::Path& path) const {
@@ -237,20 +266,28 @@ size_t NetlistTreeTermNode::getWidth() const {
   return std::abs(msb_.value_or(0) - lsb_.value_or(0)) + 1;
 }
 
+std::vector<int> NetlistTreeTermNode::busBits() const {
+  std::vector<int> bits;
+  if (msb_.has_value() and lsb_.has_value()) {
+    int msb = msb_.value();
+    int lsb = lsb_.value();
+    auto width = getWidth();
+    bits.reserve(width);
+    for (size_t i=0; i<width; i++) {
+      bits.push_back((msb>lsb)?msb-int(i):msb+int(i));
+    }
+  }
+  return bits;
+}
+
 void NetlistTreeTermNode::expand() {
   if (children_ == nullptr) {
     children_ = new Children();
-    if (msb_.has_value() and lsb_.has_value()) {
-      int msb = msb_.value();
-      int lsb = lsb_.value();
-      auto width = getWidth();
-      for (size_t i=0; i<width; i++) {
-        int bit = (msb>lsb)?msb-int(i):msb+int(i);
-        children_->push_back(new NetlistTreeBusTermBitNode(
-          this,
-          bit
-        ));
-      }
+    for (int bit : busBits()) {
+      children_->push_back(new NetlistTreeBusTermBitNode(
+        this,
+        bit
+      ));
     }
   }
 }
@@ -336,12 +373,13 @@ void NetlistTreeNode::createInstanceNode(
   const DesignRef& design_ref,
   bool hasTerms,
   bool hasPrimitives,
-  bool hasInstances) {
+  bool hasInstances,
+  const std::optional<SourceLoc>& sourceLoc) {
   auto node = new NetlistTreeInstanceNode(
     this, name, modelName,
     childID,
     design_ref,
-    hasTerms, hasPrimitives, hasInstances);
+    hasTerms, hasPrimitives, hasInstances, sourceLoc);
   children_->push_back(node);
 }
 

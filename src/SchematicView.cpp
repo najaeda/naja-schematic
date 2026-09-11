@@ -2,11 +2,65 @@
 
 #include <imgui.h>
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
+#include <functional>
+#include <string>
 
 namespace {
 inline float clampf(float v, float lo, float hi) {
     return std::max(lo, std::min(hi, v));
+}
+
+// ---------------------------------------------------------------------------
+// Label legibility helpers
+//
+// Names are drawn in world space (their pixel size follows zoom, like the
+// boxes/ports they annotate) rather than at a fixed screen size. That keeps
+// text proportional to the shrinking/growing box instead of overflowing it
+// or fighting neighboring labels at any given zoom level. Below a minimum
+// screen size a label is hidden outright (an unreadable smear is worse than
+// no label); above a cap it stops growing so heavy zoom-in doesn't blow up
+// glyphs into blurry blocks.
+// ---------------------------------------------------------------------------
+constexpr float kInstanceLabelBaseSize = 13.0f; // world-space "1x zoom" size
+constexpr float kPortLabelBaseSize     = 11.0f;
+constexpr float kMinLabelFontSize      = 7.0f;
+constexpr float kMaxLabelFontSize      = 30.0f;
+
+// Returns 0.0f when the label would render too small to read -- callers
+// should skip drawing (and any backing rect) in that case.
+float labelFontSize(float baseSize, float scale) {
+    float sz = baseSize * scale;
+    if (sz < kMinLabelFontSize) return 0.0f;
+    return std::min(sz, kMaxLabelFontSize);
+}
+
+// Picks black or white text (by relative luminance) so a label stays legible
+// against an arbitrary fill color, including diagnosis-tinted boxes.
+ImU32 contrastingTextColor(ImU32 bg, unsigned char alpha = 235) {
+    float r = ((bg >> IM_COL32_R_SHIFT) & 0xFF) / 255.0f;
+    float g = ((bg >> IM_COL32_G_SHIFT) & 0xFF) / 255.0f;
+    float b = ((bg >> IM_COL32_B_SHIFT) & 0xFF) / 255.0f;
+    float luminance = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    return luminance > 0.55f ? IM_COL32(20, 20, 20, alpha) : IM_COL32(245, 245, 245, alpha);
+}
+
+// Truncates `text` to fit within maxWidth pixels at fontSize, appending "..."
+// when it doesn't fit whole ("" if there isn't even room for the ellipsis).
+std::string truncateToWidth(ImFont* font, float fontSize, const std::string& text, float maxWidth) {
+    if (maxWidth <= 0.0f) return "";
+    if (font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text.c_str()).x <= maxWidth) return text;
+    const char* kEllipsis = "...";
+    float ellipsisWidth = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, kEllipsis).x;
+    if (ellipsisWidth > maxWidth) return "";
+    size_t lo = 0, hi = text.size();
+    while (lo < hi) {
+        size_t mid = (lo + hi + 1) / 2;
+        float w = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text.data(), text.data() + mid).x;
+        if (w + ellipsisWidth <= maxWidth) lo = mid; else hi = mid - 1;
+    }
+    return text.substr(0, lo) + kEllipsis;
 }
 
 // Draws a dashed rectangle in screen space (no corner rounding).
@@ -96,17 +150,30 @@ static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
 
         float dotR = std::max(3.0f, 3.5f * sv.transform.scale);
         dl->AddCircleFilled(screenP, dotR, portColor);
+        // A merged bus pin gets an extra ring so it reads as "thicker" than
+        // a scalar/single-bit pin, in addition to its "[hi:lo]" label.
+        if (p.isBus)
+            dl->AddCircle(screenP, dotR + 2.5f, portColor, 12, 2.0f);
 
-        if (!p.name.empty()) {
-            ImVec2 textSize = ImGui::CalcTextSize(p.name.c_str());
-            ImVec2 lblPos   = isLeft
-                ? ImVec2(screenP.x - 4.0f - textSize.x, screenP.y - textSize.y * 0.5f)
-                : ImVec2(screenP.x + 4.0f,              screenP.y - textSize.y * 0.5f);
-            dl->AddRectFilled(
-                ImVec2(lblPos.x - 2.0f, lblPos.y - 1.0f),
-                ImVec2(lblPos.x + textSize.x + 2.0f, lblPos.y + textSize.y + 1.0f),
-                IM_COL32(30, 30, 30, 210));
-            dl->AddText(lblPos, IM_COL32(220, 220, 220, 230), p.name.c_str());
+        float fontSize = labelFontSize(kPortLabelBaseSize, sv.transform.scale);
+        if (!p.name.empty() && fontSize > 0.0f) {
+            ImFont* font = ImGui::GetFont();
+            // Cap label width (in screen px, scaled with zoom like everything
+            // else) so a long bus name can't sprawl across neighboring pins.
+            const float kPortLabelMaxWorldWidth = 90.0f;
+            std::string label = truncateToWidth(font, fontSize, p.name,
+                                                 kPortLabelMaxWorldWidth * sv.transform.scale);
+            if (!label.empty()) {
+                ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label.c_str());
+                ImVec2 lblPos   = isLeft
+                    ? ImVec2(screenP.x - 4.0f - textSize.x, screenP.y - textSize.y * 0.5f)
+                    : ImVec2(screenP.x + 4.0f,              screenP.y - textSize.y * 0.5f);
+                dl->AddRectFilled(
+                    ImVec2(lblPos.x - 2.0f, lblPos.y - 1.0f),
+                    ImVec2(lblPos.x + textSize.x + 2.0f, lblPos.y + textSize.y + 1.0f),
+                    IM_COL32(30, 30, 30, 210));
+                dl->AddText(font, fontSize, lblPos, IM_COL32(220, 220, 220, 230), label.c_str());
+            }
         }
     }
 }
@@ -133,11 +200,18 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
         if (inst.diagOutline != 0)
             dl->AddRect(rmin, rmax, inst.diagOutline, 4.0f, 0, 3.5f);
 
-        if (!inst.name.empty()) {
-            ImVec2 textSize = ImGui::CalcTextSize(inst.name.c_str());
-            ImVec2 textPos  = ImVec2((rmin.x + rmax.x) * 0.5f - textSize.x * 0.5f,
-                                     rmin.y + 6.0f);
-            dl->AddText(textPos, IM_COL32(255, 255, 255, 230), inst.name.c_str());
+        float instFontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
+        if (!inst.name.empty() && instFontSize > 0.0f) {
+            ImFont* font = ImGui::GetFont();
+            float padding = std::max(2.0f, 6.0f * sv.transform.scale);
+            float maxWidth = (rmax.x - rmin.x) - 2.0f * padding;
+            std::string label = truncateToWidth(font, instFontSize, inst.name, maxWidth);
+            if (!label.empty()) {
+                ImVec2 textSize = font->CalcTextSizeA(instFontSize, FLT_MAX, 0.0f, label.c_str());
+                ImVec2 textPos  = ImVec2((rmin.x + rmax.x) * 0.5f - textSize.x * 0.5f,
+                                         rmin.y + padding);
+                dl->AddText(font, instFontSize, textPos, contrastingTextColor(inst.color), label.c_str());
+            }
         }
 
         if (inst.partialInterface) {
@@ -152,6 +226,22 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
                 dl->AddCircleFilled({dotX,           dotY}, dotR, dotCol);
                 dl->AddCircleFilled({dotX + spacing, dotY}, dotR, dotCol);
             }
+        }
+
+        // Hierarchy expand/collapse glyph: a small "+"/"-" square straddling
+        // the top-center of the box. Its world-space rect is shared with
+        // EquipotentialView's click hit-test via hierToggleGlyphRect().
+        if (canShowHierToggle(inst)) {
+            float gx0, gy0, gx1, gy1;
+            hierToggleGlyphRect(inst, gx0, gy0, gx1, gy1);
+            ImVec2 gmin, gmax;
+            sv.worldRectToScreen(gx0, gy0, gx1 - gx0, gy1 - gy0, canvasPos, canvasSize, gmin, gmax);
+            dl->AddRectFilled(gmin, gmax, IM_COL32(40, 40, 40, 230), 3.0f);
+            dl->AddRect(gmin, gmax, IM_COL32(200, 200, 200, 200), 3.0f, 0, 1.5f);
+            const char* glyph = inst.hierExpanded ? "-" : "+";
+            ImVec2 ts = ImGui::CalcTextSize(glyph);
+            ImVec2 c((gmin.x + gmax.x) * 0.5f, (gmin.y + gmax.y) * 0.5f);
+            dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32(255, 255, 255, 255), glyph);
         }
     }
 
@@ -233,6 +323,7 @@ void SchematicView::drawNet(ImDrawList* dl, const NetWire& net, const ImVec2& ca
     std::array<ImVec2, 6> points = {p0, p1, p2, p3, p4, p5};
     ImU32 col = net.color;
     float thickness = std::max(1.0f, 2.0f * transform.scale);
+    if (net.isBus) thickness *= 2.0f;
 
     // Draw segments individually to keep thickness consistent at joints.
     for (size_t i = 0; i + 1 < points.size(); ++i) {
@@ -398,14 +489,26 @@ void SchematicView::render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2
         }
     }
 
-    // Draw nets first (so instances render on top)
+    // Top-level nets draw first (so top-level instances render on top), as
+    // before. A net nested inside an expanded instance (containerShapeId set)
+    // is drawn later instead -- see drawSubtree below -- so that instance's
+    // opaque box fill doesn't get painted over it afterward.
     for (const auto& net : nets) {
-        drawNet(dl, net, canvasPos, canvasSize);
+        if (net.containerShapeId < 0) drawNet(dl, net, canvasPos, canvasSize);
     }
 
-    // Draw instances
-    for (const auto& inst : instances) {
+    // Recursive draw: a box, then the nets internal to it, then its nested
+    // children on top of those nets -- so hierarchy embedding never hides a
+    // wire under a box's fill or a child under its own internal wiring.
+    std::function<void(const InstanceShape&)> drawSubtree = [&](const InstanceShape& inst) {
         drawInstance(dl, inst, canvasPos, canvasSize);
+        for (const auto& net : nets)
+            if (net.containerShapeId == inst.id) drawNet(dl, net, canvasPos, canvasSize);
+        for (const auto& child : instances)
+            if (child.parentShapeId == inst.id) drawSubtree(child);
+    };
+    for (const auto& inst : instances) {
+        if (inst.parentShapeId < 0) drawSubtree(inst);
     }
 
     dl->PopClipRect();

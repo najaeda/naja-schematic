@@ -28,7 +28,8 @@ class NetlistTree {
       const DesignRef& design_ref,
       bool hasTerms,
       bool hasPrimitives,
-      bool hasInstances);
+      bool hasInstances,
+      const std::optional<SourceLoc>& sourceLoc = std::nullopt);
 
     NetlistTreeNode* getNode(unsigned id) const;
     NetlistTreeNode* getRoot() const { return root_; }
@@ -73,7 +74,8 @@ class NetlistTreeNode {
       const DesignRef& design_ref,
       bool hasTerms,
       bool hasPrimitives,
-      bool hasInstances);
+      bool hasInstances,
+      const std::optional<SourceLoc>& sourceLoc = std::nullopt);
     void createChildren();
     bool hasChildren() const { return children_ != nullptr; }
     virtual NetlistTreeInstanceNode* getInstanceNode() const;
@@ -93,6 +95,17 @@ class NetlistTreeNode {
     virtual bool isBitTerm() const {
       return false;
     }
+    // True for a whole-bus term node (msb/lsb both set) — offers a
+    // "Show Bus Equipotential" action instead of the single-bit one.
+    virtual bool isBus() const {
+      return false;
+    }
+    // Bit indices from msb to lsb for a bus node (isBus() == true); empty
+    // otherwise. Same order expand() builds NetlistTreeBusTermBitNode
+    // children in.
+    virtual std::vector<int> busBits() const {
+      return {};
+    }
     virtual int getBusBit() const {
       return 0;
     }
@@ -103,6 +116,11 @@ class NetlistTreeNode {
     // Diagnosis items attached to this node's path, if any (only
     // NetlistTreeInstanceNode currently reports these).
     virtual std::vector<const DiagnosisItem*> getDiagnostics() const { return {}; }
+    // RTL source location, if naja recorded one for this node (only
+    // NetlistTreeInstanceNode currently reports these; populated today only
+    // for SystemVerilog-loaded designs). Drives the "Show RTL Source"
+    // context-menu entry.
+    virtual std::optional<SourceLoc> getSourceLoc() const { return std::nullopt; }
   protected:
     NetlistTreeNode(NetlistTree* tree);
     NetlistTreeNode(NetlistTreeNode* parent);
@@ -123,7 +141,8 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
       const DesignRef& design_ref,
       bool hasTerms,
       bool hasPrimitives,
-      bool hasInstances
+      bool hasInstances,
+      const std::optional<SourceLoc>& sourceLoc = std::nullopt
     );
     NetlistTreeInstanceNode(
       NetlistTreeNode* parent,
@@ -133,7 +152,8 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
       const DesignRef& design_ref,
       bool hasTerms,
       bool hasPrimitives,
-      bool hasInstances
+      bool hasInstances,
+      const std::optional<SourceLoc>& sourceLoc = std::nullopt
     );
 
     virtual void expand() override;
@@ -151,6 +171,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     }
     virtual ImU32 getColor() const override;
     virtual std::vector<const DiagnosisItem*> getDiagnostics() const override;
+    virtual std::optional<SourceLoc> getSourceLoc() const override { return sourceLoc_; }
   private:
     bool        isRoot_         {false};
     std::string name_           {};
@@ -160,6 +181,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     bool        hasTerms_       {false};
     bool        hasPrimitives_  {false};
     bool        hasInstances_   {false};
+    std::optional<SourceLoc> sourceLoc_ {};
 };
 
 class NetlistTreeGroupNode : public NetlistTreeNode {
@@ -198,9 +220,13 @@ class NetlistTreeTermNode : public NetlistTreeNode {
     virtual bool isBitTerm() const override {
       return !(msb_.has_value() && lsb_.has_value());
     }
+    virtual bool isBus() const override {
+      return msb_.has_value() && lsb_.has_value();
+    }
     virtual unsigned getChildID() const override { return childID_; }
     bool isTopTerm() const;
     size_t getWidth() const;
+    virtual std::vector<int> busBits() const override;
   private:
     std::string         name_;
     unsigned            childID_;

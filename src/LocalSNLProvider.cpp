@@ -4,9 +4,12 @@
 #include "Console.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <sstream>
 
 // naja core
 #include "NLUniverse.h"
@@ -22,6 +25,11 @@
 #include "SNLBusTermBit.h"
 #include "SNLScalarTerm.h"
 #include "SNLNetComponent.h"
+#include "SNLBitNet.h"
+#include "SNLBusNet.h"
+#include "SNLBusNetBit.h"
+#include "SNLDesignObject.h"
+#include "SNLRTLInfos.h"
 #include "SNLPath.h"
 #include "SNLOccurrence.h"
 #include "SNLEquipotential.h"
@@ -67,6 +75,14 @@ static bool hasVisiblePrimitiveInstances(const SNLDesign* d) {
   return false;
 }
 
+// True if this design has any sub-instances (primitive or not) worth showing
+// in a nested hierarchical schematic box — drives the client's expand glyph.
+static bool hasAnySubInstances(const SNLDesign* d) {
+  if (!d) return false;
+  if (!d->getNonPrimitiveInstances().empty()) return true;
+  return hasVisiblePrimitiveInstances(d);
+}
+
 static std::string termName(const SNLBitTerm* t) {
   auto s = t->getString();
   // getString() returns "<term:id>" for unnamed ports — show direction instead
@@ -91,6 +107,23 @@ static json bitTermJson(const SNLBitTerm* bt) {
   if (auto* btb = dynamic_cast<const SNLBusTermBit*>(bt))
     t["bit"] = static_cast<int>(btb->getBit());
   return t;
+}
+
+// RTL source location for an elaborated object, if naja has one recorded
+// (SNLRTLInfos -- populated today only by the SystemVerilog/slang frontend).
+// Returns JSON null when unavailable, which the client treats as "no link".
+static json sourceLocJson(const SNLDesignObject* obj) {
+  if (!obj || !obj->hasRTLInfos()) return nullptr;
+  auto* rtl = obj->getRTLInfos();
+  if (!rtl->hasSourceLoc()) return nullptr;
+  const auto& loc = *rtl->getSourceLoc();
+  return json{
+    {"file",       loc.file.getString()},
+    {"line",       loc.line},
+    {"end_line",   loc.endLine},
+    {"column",     loc.column},
+    {"end_column", loc.endColumn}
+  };
 }
 
 // Resolve the DB for a request's db_id (falls back to DB0 if not found in user DBs).
@@ -193,6 +226,22 @@ void LocalSNLProvider::findAndSetTop() {
   Console::Error("LocalSNLProvider: could not determine top design");
 }
 
+bool LocalSNLProvider::setTopByName(const std::string& name) {
+  for (auto* lib : db_->getLibraries()) {
+    if (lib->isPrimitives()) continue;
+    for (auto* design : lib->getSNLDesigns()) {
+      if (design->isPrimitive()) continue;
+      if (designName(design) == name) {
+        db_->setTopDesign(design);
+        Console::Log("Top design (explicit): " + name);
+        return true;
+      }
+    }
+  }
+  Console::Error("LocalSNLProvider: requested top module not found: " + name);
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Loading
 // ---------------------------------------------------------------------------
@@ -244,56 +293,60 @@ void LocalSNLProvider::loadVerilog(
   }
 }
 
-static void expandFlist(const std::filesystem::path& flist,
-                        std::vector<std::filesystem::path>& out) {
-  std::ifstream f(flist);
-  if (!f) { Console::Error("Cannot open flist: " + flist.string()); return; }
-  auto baseDir = flist.parent_path();
-  std::string line;
-  while (std::getline(f, line)) {
-    auto s = line.find_first_not_of(" \t");
-    if (s == std::string::npos) continue;
-    line = line.substr(s);
-    auto e = line.find_last_not_of(" \t\r\n");
-    if (e != std::string::npos) line.resize(e + 1);
-    if (line.empty() || line[0] == '#' || line.substr(0, 2) == "//") continue;
-    if (line[0] == '-') {
-      // recurse into -f sublist
-      if (line.size() > 3 && line[1] == 'f' && (line[2] == ' ' || line[2] == '\t')) {
-        auto sub = std::filesystem::path(line.substr(3));
-        expandFlist(sub.is_relative() ? baseDir / sub : sub, out);
-      }
-      continue; // skip -I, -D, and other flags
-    }
-    auto p = std::filesystem::path(line);
-    out.push_back(p.is_relative() ? baseDir / p : p);
-  }
+// Heuristic: does this path look like a manifest/command file (as opposed to
+// an .sv/.v source) rather than a real SystemVerilog source file? Beyond the
+// standard "-f"/"-flist" extensions, EDA flows commonly name these files
+// after the "-F" convention with no fixed extension (e.g. "Flist.cva6",
+// "sources.flist", "filelist.txt"), so we also match on the "flist" substring
+// appearing anywhere in the filename.
+static bool looksLikeFlist(const std::filesystem::path& p) {
+  auto ext = p.extension().string();
+  if (ext == ".f" || ext == ".flist") return true;
+  std::string name = p.filename().string();
+  std::transform(name.begin(), name.end(), name.begin(),
+                  [](unsigned char c) { return std::tolower(c); });
+  return name.find("flist") != std::string::npos;
 }
 
-void LocalSNLProvider::loadSystemVerilog(const std::vector<std::string>& sources) {
+void LocalSNLProvider::loadSystemVerilog(const std::vector<std::string>& sources,
+                                         const std::string& topModule) {
   Console::Log("LocalSNLProvider: loading SystemVerilog (" +
                std::to_string(sources.size()) + " source entries)");
   try {
     db_ = freshDB();
 
-    // Expand Flist files; pass .sv/.v files through directly
+    // Pass .sv/.v files through directly; hand manifest/command files
+    // ("-f"/"-flist"/"Flist.*"-style paths) to slang's own "-f" command-file
+    // reader, which natively supports nested "-F" includes, "+incdir+",
+    // comments, and "${VAR}" environment variable expansion -- all of which
+    // real-world manifests (e.g. CVA6's Flist.cva6) rely on.
     std::vector<std::filesystem::path> paths;
+    // "--top" is forwarded to slang's own driver just like "-f" above (both
+    // are raw argv tokens to slang, not filesystem paths); this forces the
+    // requested module as elaboration root instead of leaving slang -- and
+    // findAndSetTop()'s post-hoc heuristic -- to guess it from whatever ends
+    // up uninstantiated, which picks the wrong design on multi-root flists.
+    if (!topModule.empty()) {
+      Console::Log("Forcing SystemVerilog top module: " + topModule);
+      paths.emplace_back("--top");
+      paths.emplace_back(topModule);
+    }
     for (const auto& s : sources) {
       std::filesystem::path p(s);
-      auto ext = p.extension();
-      if (ext == ".f" || ext == ".flist") {
-        Console::Log("Expanding flist: " + p.string());
-        expandFlist(p, paths);
-      } else {
-        paths.push_back(p);
+      if (looksLikeFlist(p)) {
+        Console::Log("Loading as flist (-f): " + p.string());
+        paths.emplace_back("-f");
       }
+      paths.push_back(p);
     }
 
     auto* userLib = NLLibrary::create(db_, NLName("work"));
     SNLSVConstructor svCtor(userLib);
     svCtor.construct(paths);
 
-    findAndSetTop();
+    if (topModule.empty() || !setTopByName(topModule)) {
+      findAndSetTop();
+    }
     Console::Log("LocalSNLProvider: SystemVerilog loaded (" +
                  std::to_string(paths.size()) + " files)");
   } catch (const std::exception& e) {
@@ -343,6 +396,10 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
     msgCb_(buildEquipotentialResponse(req));
   } else if (request == "expand_instance_terms") {
     msgCb_(buildExpandInstanceTermsResponse(req));
+  } else if (request == "load_instance_internals") {
+    msgCb_(buildInstanceInternalsResponse(req));
+  } else if (request == "load_source") {
+    msgCb_(buildSourceResponse(req));
   } else {
     Console::Error("LocalSNLProvider: unknown request: " + request);
   }
@@ -413,7 +470,8 @@ std::string LocalSNLProvider::buildInstancesResponse(
           }},
           {"has_terms",      model && !model->getTerms().empty()},
           {"has_primitives", model && hasVisiblePrimitiveInstances(model)},
-          {"has_instances",  model && !model->getNonPrimitiveInstances().empty()}
+          {"has_instances",  model && !model->getNonPrimitiveInstances().empty()},
+          {"source_loc",     sourceLocJson(inst)}
         });
       }
     }
@@ -528,6 +586,8 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
             {"design_id",  static_cast<unsigned>(model->getID())}
           };
         }
+        entry["has_instances"] = hasAnySubInstances(theInst->getModel());
+        entry["source_loc"]    = sourceLocJson(theInst);
         occs.push_back(std::move(entry));
       }
       return json{{"response","equipotential_response"},{"terms",terms},{"occurrences",occs}}.dump();
@@ -572,6 +632,8 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
             {"design_id",  static_cast<unsigned>(model->getID())}
           };
         }
+        entry["has_instances"] = hasAnySubInstances(theInst->getModel());
+        entry["source_loc"]    = sourceLocJson(theInst);
         occs.push_back(std::move(entry));
       }
       return json{{"response","equipotential_response"},{"terms",terms},{"occurrences",occs}}.dump();
@@ -628,6 +690,138 @@ std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) 
     {"response", "expanded_instance_terms"},
     {"path_key", pathKey},
     {"terms",    terms}
+  }.dump();
+}
+
+// Resolve an instance's own model (the request's design_ref, exactly as the
+// client already has it from InstTermOccurrence::designRef / the merged
+// instance's occurrence data) and report what's inside it for a nested
+// hierarchical schematic box: one level of sub-instances, plus the nets
+// wiring them together (and, for a net that also reaches one of the model's
+// own boundary ports, that pass-through connection too).
+std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) const {
+  std::string pathKey = req.value("path_key", std::string(""));
+  unsigned dbId = 0, libId = 0, designId = 0;
+  if (req.contains("design_ref")) {
+    dbId     = req["design_ref"].value("db_id",      0u);
+    libId    = req["design_ref"].value("library_id", 0u);
+    designId = req["design_ref"].value("design_id",  0u);
+  }
+
+  json children = json::array();
+  json nets     = json::array();
+
+  auto* targetDB = resolveDB(dbId);
+  if (targetDB) {
+    auto* model = findDesign(targetDB, static_cast<NLID::LibraryID>(libId),
+                                       static_cast<NLID::DesignID>(designId));
+    if (model) {
+      // Children: everything one level down, primitive or not — the nested
+      // box shows the model's actual contents, not split by tree group.
+      for (auto* inst : model->getNonPrimitiveInstances()) {
+        auto* sub = inst->getModel();
+        children.push_back({
+          {"name",       instanceName(inst)},
+          {"model_name", sub ? designName(sub) : ""},
+          {"child_id",   static_cast<unsigned>(inst->getID())},
+          {"design_ref", {
+            {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
+            {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},
+            {"design_id",  sub ? static_cast<unsigned>(sub->getID()) : 0u}
+          }},
+          {"has_terms",      sub && !sub->getTerms().empty()},
+          {"has_primitives", sub && hasVisiblePrimitiveInstances(sub)},
+          {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()},
+          {"source_loc",     sourceLocJson(inst)}
+        });
+      }
+      for (auto* inst : model->getPrimitiveInstances()) {
+        auto* sub = inst->getModel();
+        if (sub && NLDB0::isAssign(sub)) continue;
+        children.push_back({
+          {"name",       instanceName(inst)},
+          {"model_name", sub ? designName(sub) : ""},
+          {"child_id",   static_cast<unsigned>(inst->getID())},
+          {"design_ref", {
+            {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
+            {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},
+            {"design_id",  sub ? static_cast<unsigned>(sub->getID()) : 0u}
+          }},
+          {"has_terms",      sub && !sub->getTerms().empty()},
+          {"has_primitives", sub && hasVisiblePrimitiveInstances(sub)},
+          {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()},
+          {"source_loc",     sourceLocJson(inst)}
+        });
+      }
+
+      // Internal nets: split each net's components into sub-instance pins
+      // (SNLInstTerm) vs the model's own boundary ports (SNLBitTerm) so the
+      // client can tell a child-to-child wire from a pass-through to this
+      // instance's own external port. Nets with fewer than two live
+      // endpoints don't need drawing.
+      auto emitBitNet = [&](SNLBitNet* bn, const std::string& name, std::optional<int> bit) {
+        json pins = json::array();
+        for (auto* comp : bn->getComponents()) {
+          if (auto* it = dynamic_cast<SNLInstTerm*>(comp)) {
+            auto pin = bitTermJson(it->getBitTerm());
+            pin["inst_id"] = static_cast<unsigned>(it->getInstance()->getID());
+            pins.push_back(std::move(pin));
+          } else if (auto* bt = dynamic_cast<SNLBitTerm*>(comp)) {
+            pins.push_back(bitTermJson(bt));
+          }
+        }
+        if (pins.size() < 2) return;
+        json n = {{"name", name}, {"pins", std::move(pins)}};
+        if (bit.has_value()) n["bit"] = *bit;
+        nets.push_back(std::move(n));
+      };
+
+      for (auto* net : model->getNets()) {
+        if (auto* bus = dynamic_cast<SNLBusNet*>(net)) {
+          int lo = std::min(static_cast<int>(bus->getLSB()), static_cast<int>(bus->getMSB()));
+          int hi = std::max(static_cast<int>(bus->getLSB()), static_cast<int>(bus->getMSB()));
+          for (int b = lo; b <= hi; ++b) {
+            if (auto* bit = bus->getBit(b)) emitBitNet(bit, bus->getString(), b);
+          }
+        } else if (auto* bn = dynamic_cast<SNLBitNet*>(net)) {
+          emitBitNet(bn, bn->getString(), std::nullopt);
+        }
+      }
+    }
+  }
+
+  return json{
+    {"response",  "instance_internals_response"},
+    {"path_key",  pathKey},
+    {"children",  children},
+    {"nets",      nets}
+  }.dump();
+}
+
+// Fetches the raw text of an RTL source file named by a source_loc (see
+// sourceLocJson() above), so the client can display it without needing
+// filesystem access of its own -- the WASM/browser build has none, so this
+// goes through the same provider abstraction as everything else rather than
+// having native mode read the file directly.
+std::string LocalSNLProvider::buildSourceResponse(const json& req) const {
+  std::string file = req.value("file", std::string(""));
+  int line = req.value("line", 0);
+
+  std::ifstream ifs(file);
+  bool found = static_cast<bool>(ifs);
+  std::string text;
+  if (found) {
+    std::ostringstream ss;
+    ss << ifs.rdbuf();
+    text = ss.str();
+  }
+
+  return json{
+    {"response", "source_response"},
+    {"file",     file},
+    {"line",     line},
+    {"found",    found},
+    {"text",     text}
   }.dump();
 }
 

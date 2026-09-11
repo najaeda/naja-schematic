@@ -32,8 +32,23 @@ def has_visible_primitive_instances(design):
     return any(not instance.getModel().isAssign()
                for instance in design.getPrimitiveInstances())
 
-def serialize_model(model, child_id, name):
+def get_source_loc(obj):
+    # RTL source location for an elaborated object (SNLRTLInfos), populated
+    # today only by the SystemVerilog/slang frontend. None means "no link
+    # available" -- not an error.
+    if not obj.hasSourceLoc():
+        return None
+    file, line, column, end_line, end_column = obj.getSourceLoc()
     return {
+        "file": file,
+        "line": line,
+        "end_line": end_line,
+        "column": column,
+        "end_column": end_column,
+    }
+
+def serialize_model(model, child_id, name, source_loc=None):
+    result = {
         "name": name,
         "child_id": child_id,
         "model_name": model.getName(),
@@ -46,6 +61,9 @@ def serialize_model(model, child_id, name):
         "has_primitives": has_visible_primitive_instances(model),
         "has_instances": model.hasNonPrimitiveInstances(),
     }
+    if source_loc is not None:
+        result["source_loc"] = source_loc
+    return result
 
 def direction_to_int(direction):
     if direction == naja.SNLTerm.Direction.Input:
@@ -125,7 +143,9 @@ async def handle_connection(websocket):
                         model = instance.getModel()
                         if model.isAssign():
                             continue
-                        children.append(serialize_model(model, instance.getID(), instance.getName()))
+                        children.append(serialize_model(
+                            model, instance.getID(), instance.getName(),
+                            get_source_loc(instance)))
 
                     response_type = req_type.replace("load_", "") + "_response"
                     await websocket.send(json.dumps({
@@ -194,12 +214,17 @@ async def handle_connection(websocket):
                     path.append([occ.getInstTerm().getInstance().getName(), occ.getInstTerm().getInstance().getID()])
                     instTerm = occ.getInstTerm()
                     term = instTerm.getBitTerm()
+                    inst_model = instTerm.getInstance().getModel()
+                    has_instances = (inst_model.hasNonPrimitiveInstances() or
+                                     has_visible_primitive_instances(inst_model))
                     occurrences.append({
                         "path": path,
                         "term_id": term.getID(),
                         "name": term.getName(),
                         "direction": direction_to_int(term.getDirection()),
-                        "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None
+                        "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
+                        "has_instances": has_instances,
+                        "source_loc": get_source_loc(instTerm.getInstance())
                     })
                 for term in equipotential.getTerms():
                     terms.append({
@@ -213,6 +238,91 @@ async def handle_connection(websocket):
                     "occurrences": occurrences,
                     "terms": terms
                 }))
+
+            elif req_type == "load_instance_internals":
+                path_key = request.get("path_key", "")
+                design_ref = get_design_ref(design_ref_message)
+                model = u.getSNLDesign(design_ref) if design_ref else None
+                children = []
+                nets = []
+
+                if model:
+                    for instance in model.getNonPrimitiveInstances():
+                        sub = instance.getModel()
+                        children.append(serialize_model(
+                            sub, instance.getID(), instance.getName(),
+                            get_source_loc(instance)))
+                    for instance in model.getPrimitiveInstances():
+                        sub = instance.getModel()
+                        if sub.isAssign():
+                            continue
+                        children.append(serialize_model(
+                            sub, instance.getID(), instance.getName(),
+                            get_source_loc(instance)))
+
+                    def emit_bit_net(bit_net, name, bit):
+                        pins = []
+                        for comp in bit_net.getComponents():
+                            if isinstance(comp, naja.SNLInstTerm):
+                                bt = comp.getBitTerm()
+                                pins.append({
+                                    "name": bt.getName(),
+                                    "child_id": bt.getID(),
+                                    "direction": direction_to_int(bt.getDirection()),
+                                    "bit": bt.getBit() if isinstance(bt, naja.SNLBusTermBit) else None,
+                                    "inst_id": comp.getInstance().getID(),
+                                })
+                            elif isinstance(comp, naja.SNLBitTerm):
+                                pins.append({
+                                    "name": comp.getName(),
+                                    "child_id": comp.getID(),
+                                    "direction": direction_to_int(comp.getDirection()),
+                                    "bit": comp.getBit() if isinstance(comp, naja.SNLBusTermBit) else None,
+                                })
+                        if len(pins) < 2:
+                            return
+                        entry = {"name": name, "pins": pins}
+                        if bit is not None:
+                            entry["bit"] = bit
+                        nets.append(entry)
+
+                    for net in model.getNets():
+                        if isinstance(net, naja.SNLBusNet):
+                            lo, hi = sorted((net.getLSB(), net.getMSB()))
+                            for b in range(lo, hi + 1):
+                                bit_net = net.getBit(b)
+                                if bit_net:
+                                    emit_bit_net(bit_net, net.getName(), b)
+                        else:
+                            emit_bit_net(net, net.getName(), None)
+
+                await websocket.send(json.dumps({
+                    "response": "instance_internals_response",
+                    "path_key": path_key,
+                    "children": children,
+                    "nets": nets
+                }))
+
+            elif req_type == "load_source":
+                file = request.get("file", "")
+                line = request.get("line", 0)
+                text = ""
+                found = False
+                try:
+                    with open(file, "r") as f:
+                        text = f.read()
+                    found = True
+                except OSError as e:
+                    print(f"⚠️ Failed to read source file {file}: {e}")
+
+                await websocket.send(json.dumps({
+                    "response": "source_response",
+                    "file": file,
+                    "line": line,
+                    "found": found,
+                    "text": text
+                }))
+
             else:
                 print(f"⚠️ Unknown request type: {req_type}")
 

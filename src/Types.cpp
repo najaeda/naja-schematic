@@ -2,6 +2,18 @@
 
 #include "Console.h"
 
+static std::optional<SourceLoc> parseSourceLoc(const json& j) {
+  if (!j.contains("source_loc") || j["source_loc"].is_null()) return std::nullopt;
+  const auto& s = j["source_loc"];
+  SourceLoc loc;
+  loc.file      = s.value("file", std::string(""));
+  loc.line      = s.value("line", 0);
+  loc.endLine   = s.value("end_line", loc.line);
+  loc.column    = s.value("column", 0);
+  loc.endColumn = s.value("end_column", loc.column);
+  return loc;
+}
+
 Direction intToDirection(int dirInt) {
   switch (dirInt) {
     case 0:
@@ -33,6 +45,7 @@ void from_json(const json& j, InstanceResponseJson& r) {
   j.at("has_primitives").get_to(r.has_primitives);
   j.at("has_instances").get_to(r.has_instances);
   j.at("has_terms").get_to(r.has_terms);
+  r.source_loc = parseSourceLoc(j);
 }
 
 void from_json(const json& j, InstancesResponseJson& instances) {
@@ -135,6 +148,9 @@ void from_json(const json& j, Equipotential& e) {
 
       if (occJson.contains("design_ref") && occJson["design_ref"].is_object())
         occurrence.designRef = occJson["design_ref"].get<DesignRef>();
+
+      occurrence.has_instances = occJson.value("has_instances", false);
+      occurrence.source_loc    = parseSourceLoc(occJson);
 
       e.occurrences.push_back(std::move(occurrence));
     }

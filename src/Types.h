@@ -17,6 +17,17 @@ struct DesignRef {
   int design_id;
 };
 
+// RTL source location for an elaborated object (naja's SNLRTLInfos), only
+// populated for SystemVerilog-loaded designs today (see CLAUDE.md). Absent
+// means "no source location available" -- not an error.
+struct SourceLoc {
+  std::string file;
+  int line = 0;
+  int endLine = 0;
+  int column = 0;
+  int endColumn = 0;
+};
+
 struct InstanceResponseJson {
   std::string name;
   unsigned child_id;
@@ -25,6 +36,7 @@ struct InstanceResponseJson {
   bool has_primitives;
   bool has_instances;
   bool has_terms;
+  std::optional<SourceLoc> source_loc;
 };
 
 struct InstancesResponseJson {
@@ -72,6 +84,11 @@ struct InstTermOccurrence {
   std::vector<unsigned> pathIds;   // instance child_ids (used to send load_equipotential)
   BitTerm term;
   DesignRef designRef;             // model of the tail instance — used to fetch its full interface
+  // True when the tail instance's own model has sub-instances worth showing
+  // in a nested schematic — drives the hierarchy expand/collapse glyph.
+  bool has_instances = false;
+  // RTL source location of the tail instance itself, if available.
+  std::optional<SourceLoc> source_loc;
 };
 
 struct TermResponseJson {
@@ -157,6 +174,10 @@ struct Port {
     Direction direction = Direction::Inout; // logical direction for geometry
     bool isInput = false; // used by renderer to pick red/green
     ImU32 color = 0;      // optional explicit color override (0 == no override)
+    // True when this pin represents multiple merged bus bits rather than a
+    // single bit/scalar terminal — drives a distinct draw style and toggles
+    // expand/collapse (instead of load_equipotential) on double-click.
+    bool isBus = false;
 };
 
 struct InstanceShape {
@@ -176,6 +197,19 @@ struct InstanceShape {
     // Drawn as an extra outline so it doesn't fight partialInterface's dash.
     ImU32 diagOutline = 0;
     std::vector<Port> ports;
+
+    // --- Hierarchy embedding (nested boxes) ---
+    // True when this instance's model has sub-instances — draws the small
+    // expand/collapse glyph (see hierToggleGlyphRect() below).
+    bool hasChildren = false;
+    // True when currently showing its internals nested inside this box
+    // (drives "+" vs "-" on the glyph); its children are other entries in
+    // the same flat SchematicView::instances vector with parentShapeId
+    // pointing back at this shape's id.
+    bool hierExpanded = false;
+    // -1 = top-level box; otherwise the id of the InstanceShape this box is
+    // nested inside of.
+    int parentShapeId = -1;
 };
 
 struct NetWire {
@@ -185,7 +219,34 @@ struct NetWire {
     int dstInstance = 0;
     int dstPortId = 0;
     ImU32 color = IM_COL32(200,200,100,255);
+    // True when this wire represents multiple merged bus-bit nets between
+    // the same two (merged) pins — drawn thicker.
+    bool isBus = false;
+    // -1 = a top-level net (drawn under all instances, as before). Otherwise
+    // the id of the InstanceShape whose internals this net belongs to — drawn
+    // right after that instance's own box so its opaque fill doesn't hide
+    // wiring nested inside it, but before that instance's children so the
+    // children still render on top.
+    int containerShapeId = -1;
 };
+
+// World-space rect of an instance's hierarchy expand/collapse glyph
+// (a small square straddling the top-center of the box). Shared by
+// SchematicView's draw code and EquipotentialView's click hit-test so the
+// two never drift apart.
+inline void hierToggleGlyphRect(const InstanceShape& inst,
+                                float& x0, float& y0, float& x1, float& y1) {
+    x0 = inst.x + inst.w * 0.5f - 8.0f;
+    x1 = x0 + 16.0f;
+    y0 = inst.y - 2.0f;
+    y1 = y0 + 16.0f;
+}
+
+// True when a box is large enough to host the hierarchy toggle glyph
+// (excludes zero-size term stubs and other tiny/degenerate shapes).
+inline bool canShowHierToggle(const InstanceShape& inst) {
+    return inst.hasChildren && inst.w >= 40.0f && inst.h >= 30.0f;
+}
 
 // Renderer-side term/occurrence types (used only by the UI renderer)
 struct Term {

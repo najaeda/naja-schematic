@@ -61,6 +61,8 @@ set(CORE_SOURCES
   src/SchematicView.cpp
   src/DiagnosisStore.cpp
   src/DiagnosisView.cpp
+  src/SourceStore.cpp
+  src/SourceView.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
 )

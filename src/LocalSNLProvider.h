@@ -34,8 +34,11 @@ class LocalSNLProvider : public INetlistProvider {
 
     // Load SystemVerilog via slang.
     // Each entry in sources is either a .sv/.v file or a .f/.flist file;
-    // Flist entries are expanded recursively before passing to the constructor.
-    void loadSystemVerilog(const std::vector<std::string>& sources);
+    // Flist entries are handed to slang's own "-f" command-file reader.
+    // If topModule is non-empty, it is forced as the elaboration root (via
+    // slang's "--top") instead of relying on findAndSetTop()'s heuristic.
+    void loadSystemVerilog(const std::vector<std::string>& sources,
+                           const std::string& topModule = "");
 
   private:
     std::function<void()>                   openCb_;
@@ -51,6 +54,10 @@ class LocalSNLProvider : public INetlistProvider {
     // Find the top design among user libraries and register it in the DB.
     void findAndSetTop();
 
+    // Find a design by name among user libraries and register it as top.
+    // Returns false (and leaves the DB's top design untouched) if not found.
+    bool setTopByName(const std::string& name);
+
     void        handleRequest(const std::string& jsonRequest);
     std::string buildRootResponse() const;
     std::string buildInstancesResponse(unsigned guiId, unsigned dbId,
@@ -60,6 +67,8 @@ class LocalSNLProvider : public INetlistProvider {
                                    unsigned libId, unsigned designId) const;
     std::string buildEquipotentialResponse(const nlohmann::json& req) const;
     std::string buildExpandInstanceTermsResponse(const nlohmann::json& req) const;
+    std::string buildInstanceInternalsResponse(const nlohmann::json& req) const;
+    std::string buildSourceResponse(const nlohmann::json& req) const;
 };
 
 #endif // __EMSCRIPTEN__

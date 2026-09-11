@@ -40,6 +40,7 @@ int main() {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  setupFonts();
   ImGui_ImplSDL2_InitForOpenGL(g_state.window, g_state.glContext);
   ImGui_ImplOpenGL3_Init("#version 300 es");
 

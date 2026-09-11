@@ -39,6 +39,7 @@ int main(int argc, char* argv[]) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  setupFonts();
   ImGui_ImplSDL2_InitForOpenGL(state.window, state.glContext);
   ImGui_ImplOpenGL3_Init("#version 330 core");
 

@@ -3,6 +3,11 @@
 #include <map>
 
 namespace {
+// Diagnosis UI is temporarily hidden (tree/schematic tinting, tooltips, and
+// the Diagnostics tab/menu items in AppLogic.cpp) without removing the
+// underlying data/plumbing. Flip to false to re-enable.
+constexpr bool kDiagnosisUIHidden = true;
+
 std::vector<DiagnosisItem> g_items;
 std::map<std::string, std::vector<const DiagnosisItem*>> g_instanceIndex;
 std::map<std::string, std::vector<const DiagnosisItem*>> g_netIndex;
@@ -46,12 +51,14 @@ void DiagnosisStore::clear() {
 const std::vector<DiagnosisItem>& DiagnosisStore::all() { return g_items; }
 
 std::vector<const DiagnosisItem*> DiagnosisStore::instanceDiagnostics(const std::string& pathKey) {
+  if (kDiagnosisUIHidden) return {};
   auto it = g_instanceIndex.find(pathKey);
   return it != g_instanceIndex.end() ? it->second : std::vector<const DiagnosisItem*>{};
 }
 
 std::vector<const DiagnosisItem*> DiagnosisStore::netDiagnostics(const std::string& pathKey,
                                                                   const std::string& terminal) {
+  if (kDiagnosisUIHidden) return {};
   auto it = g_netIndex.find(netKey(pathKey, terminal));
   return it != g_netIndex.end() ? it->second : std::vector<const DiagnosisItem*>{};
 }
