@@ -17,7 +17,18 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: brew install sdl2 ninja
+        # capnp/tbb/boost: required by thirdparty/naja (see thirdparty/naja's
+        # own .github/workflows/macos-build.yml). bison/flex: macOS ships an
+        # ancient system bison/flex, so the brew ones need to come first on
+        # PATH (next step).
+        run: brew install sdl2 ninja capnp tbb boost bison flex
+
+      - name: Set Homebrew bison/flex on PATH
+        run: |
+          echo "/usr/local/opt/flex/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/opt/bison/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/opt/flex/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/opt/bison/bin" >> "$GITHUB_PATH"
 
       - name: Configure (native-debug preset)
         run: cmake --preset native-debug
