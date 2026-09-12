@@ -4,6 +4,9 @@
 [![Native Linux Build](https://github.com/najaeda/naja-schematic/actions/workflows/native-linux.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/native-linux.yml)
 [![Emscripten Build](https://github.com/najaeda/naja-schematic/actions/workflows/emscripten.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/emscripten.yml)
 
+> **Note:** This is a proof of concept in beta. Expect rough edges, breaking
+> changes, and incomplete features.
+
 A C++20, [Dear ImGui](https://github.com/ocornut/imgui)-based netlist
 viewer/schematic browser for the [naja](https://github.com/najaeda/naja) SNL
 netlist data model. It builds to two targets from the same core sources: a

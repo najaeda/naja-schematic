@@ -302,7 +302,7 @@ std::string NetlistTreeTermNode::getLabel() const {
   if (not isBitTerm()) {
     name += "[" + std::to_string(msb_.value()) + ":" + std::to_string(lsb_.value()) + "]";
   }
-  return name_;
+  return name;
 }
 
 ImU32 NetlistTreeTermNode::getColor() const {

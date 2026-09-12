@@ -84,9 +84,13 @@ static bool hasAnySubInstances(const SNLDesign* d) {
 }
 
 static std::string termName(const SNLBitTerm* t) {
-  auto s = t->getString();
-  // getString() returns "<term:id>" for unnamed ports — show direction instead
-  if (!s.empty() && s[0] == '<') {
+  // getName() returns the plain base name with no "[bit]" suffix — the
+  // client appends that itself from the separate "bit" field, so using
+  // getString() here would double the brackets for bus bit terms.
+  auto s = t->getName().getString();
+  // Unnamed ports have an empty name — show direction instead, matching
+  // getString()'s "<term:id>" placeholder behavior.
+  if (s.empty()) {
     switch (static_cast<SNLNetComponent::Direction::DirectionEnum>(t->getDirection())) {
       case SNLNetComponent::Direction::DirectionEnum::Input:  return "(in)";
       case SNLNetComponent::Direction::DirectionEnum::Output: return "(out)";
@@ -502,9 +506,11 @@ std::string LocalSNLProvider::buildTermsResponse(
     if (design) {
       for (auto* term : design->getTerms()) {
         if (auto* bt = dynamic_cast<SNLBusTerm*>(term)) {
-          // Bus term: emit as a single entry with msb/lsb
+          // Bus term: emit as a single entry with msb/lsb. Use the plain
+          // base name (no "[msb:lsb]" suffix) -- the client appends the
+          // range itself from msb/lsb, so getString() here would double it.
           json t = {
-            {"name",      bt->getString()},
+            {"name",      bt->getName().getString()},
             {"child_id",  static_cast<unsigned>(bt->getID())},
             {"direction", snlDirToInt(bt->getDirection())},
             {"msb",       static_cast<int>(bt->getMSB())},
