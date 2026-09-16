@@ -47,18 +47,24 @@ int main(int argc, char* argv[]) {
 
   auto* provider = new LocalSNLProvider();
 
-  // CLI usage: naja-schematic-standalone [<design>] [--diagnosis <path>]
+  // CLI usage: naja-schematic-standalone [<design>] [--liberty <path>]... [--diagnosis <path>]
   // <design> is loaded by extension (.sv/.v/otherwise-assumed-SNL-directory);
+  // --liberty defines the primitive cell library for a .v design (repeatable,
+  // once per file) -- it is not supported for .sv, since loadSystemVerilog()/
+  // SNLSVConstructor has no liberty hook;
   // --diagnosis pre-loads a diagnosis_response-shaped JSON so an external
   // caller (a script, or naja-agent's skill, after an edit-check cycle) can
   // open a fully annotated view in one command instead of requiring a human
   // to click through File > Open .../Load Diagnosis JSON... by hand.
   std::string designPath;
   std::string diagnosisPath;
+  std::vector<std::string> libertyPaths;
   for (int i = 1; i < argc; ++i) {
     std::string arg(argv[i]);
     if (arg == "--diagnosis" && i + 1 < argc) {
       diagnosisPath = argv[++i];
+    } else if (arg == "--liberty" && i + 1 < argc) {
+      libertyPaths.push_back(argv[++i]);
     } else if (designPath.empty()) {
       designPath = arg;
     }
@@ -66,12 +72,17 @@ int main(int argc, char* argv[]) {
 
   if (!designPath.empty()) {
     std::string ext = designPath.size() >= 3 ? designPath.substr(designPath.rfind('.') + 1) : "";
-    if (ext == "sv")
+    if (ext == "sv") {
+      if (!libertyPaths.empty()) {
+        std::cerr << "--liberty is only supported for .v designs, not .sv\n";
+        return 1;
+      }
       provider->loadSystemVerilog({designPath});
-    else if (ext == "v")
-      provider->loadVerilog({designPath}, {});
-    else
+    } else if (ext == "v") {
+      provider->loadVerilog({designPath}, libertyPaths);
+    } else {
       provider->loadSNL(designPath); // assume SNL directory
+    }
   }
 
   state.provider = provider;

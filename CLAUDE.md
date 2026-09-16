@@ -87,11 +87,18 @@ Windows has no backend and isn't a supported target.
 
 Run directly, optionally with a netlist to load (dispatched by extension —
 `.v` → Verilog, `.sv` → SystemVerilog via slang, otherwise treated as an SNL
-directory) and/or a diagnosis JSON to pre-load (`--diagnosis <path>`, either
-order, both optional — see `loadDiagnosisFile()` in `AppLogic.cpp`):
+directory), `--liberty <path>` (repeatable, once per file — defines the
+primitive cell library for a `.v` design; not supported for `.sv`, since
+`LocalSNLProvider::loadSystemVerilog()`/`SNLSVConstructor` has no liberty
+hook, and the CLI fails loudly rather than silently ignoring it), and/or a
+diagnosis JSON to pre-load (`--diagnosis <path>`, any order, all optional —
+see `loadDiagnosisFile()` in `AppLogic.cpp`):
 
 ```bash
-../naja-schematic-build/native-debug/naja-schematic-standalone [path/to/netlist] [--diagnosis path/to/diagnosis.json]
+../naja-schematic-build/native-debug/naja-schematic-standalone [path/to/netlist] [--liberty path/to/cells.lib]... [--diagnosis path/to/diagnosis.json]
+
+# gate-level Verilog + Liberty example:
+../naja-schematic-build/native-debug/naja-schematic-standalone design.v --liberty cells.lib
 ```
 
 ### WASM target (`naja-schematic`)
@@ -107,11 +114,23 @@ emrun --port 8080 naja-schematic.html
 ```
 
 The WASM app doesn't link naja directly — it talks to a netlist server over a
-WebSocket instead. Start the server first:
+WebSocket instead. Start the server first, optionally with `--verilog <path>`
+(a single Verilog netlist) and `--liberty <path> [<path>...]` (one flag,
+listing the Liberty files defining its cell library — see the `argparse`
+setup in `najaeda_server.py`'s `__main__` block):
 
 ```bash
 python3 scripts/najaeda_server.py   # serves ws://localhost:8081/ws
+
+# gate-level Verilog + Liberty example:
+python3 scripts/najaeda_server.py --verilog design.v --liberty cells.lib
 ```
+
+Note the flag shapes are *not* symmetric with the native CLI above: the
+server takes `--verilog <path>` (singular) + `--liberty <path>...` (one flag,
+many files after it), while the native standalone takes a positional
+`<design>` + a repeatable `--liberty <path>` (one flag per file) — don't
+assume a reader moving between modes can reuse the same invocation shape.
 
 (`scripts/test_server.py` is a minimal canned-response stub for protocol
 testing without a real netlist backend.)

@@ -66,15 +66,20 @@ cmake --build build
 Run (`../naja-schematic-build/native-debug/naja-schematic-standalone` on
 macOS, `build/naja-schematic-standalone` on Linux), optionally with a
 netlist to load (dispatched by extension — `.v` → Verilog, `.sv` →
-SystemVerilog, otherwise treated as an SNL directory) and/or a diagnosis
-JSON to pre-load:
+SystemVerilog, otherwise treated as an SNL directory), one or more
+`--liberty` files defining the primitive cell library for a `.v` design, and/or
+a diagnosis JSON to pre-load:
 
 ```bash
-naja-schematic-standalone [path/to/netlist] [--diagnosis path/to/diagnosis.json]
+naja-schematic-standalone [path/to/netlist] [--liberty path/to/cells.lib]... [--diagnosis path/to/diagnosis.json]
 ```
 
-`<netlist>` and `--diagnosis <path>` are both optional and order-independent.
-Without `--diagnosis`, use File > Load Diagnosis JSON... in the app instead.
+`<netlist>`, `--liberty <path>` and `--diagnosis <path>` are all optional and
+order-independent. `--liberty` is repeatable (once per file) and only
+supported for `.v` designs — a gate-level Verilog netlist that instantiates
+Liberty std cells needs it to resolve them; it errors out for `.sv`, since the
+SystemVerilog frontend has no liberty hook. Without `--diagnosis`, use File >
+Load Diagnosis JSON... in the app instead.
 
 ### WASM target (`naja-schematic`)
 
@@ -88,11 +93,20 @@ emrun --port 8080 naja-schematic.html
 ```
 
 The WASM app doesn't link naja directly — it talks to a netlist server over a
-WebSocket. Start the server first:
+WebSocket. Start the server first, optionally pointing it at a Verilog
+netlist and the Liberty files defining its cell library:
 
 ```bash
 python3 scripts/najaeda_server.py   # serves ws://localhost:8081/ws
+# or, to serve a gate-level design instead of the default canned one:
+python3 scripts/najaeda_server.py --verilog path/to/netlist.v --liberty path/to/cells.lib
 ```
+
+Note the flag shapes differ from the native CLI above: the server takes
+`--verilog <path>` (single file) plus `--liberty <path> [<path>...]` (one
+flag, many files), while the native standalone takes a positional
+`<design>` plus a repeatable `--liberty <path>` (once per file) — the two
+modes aren't symmetric.
 
 ## Architecture
 
