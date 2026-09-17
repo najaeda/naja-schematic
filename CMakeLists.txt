@@ -178,3 +178,47 @@ else()
   # Enable compile_commands.json for clangd / VS Code IntelliSense
   set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 endif()
+
+# ============================================================
+# Target 3: naja-schematic-tests — GUI-independent unit tests
+# ============================================================
+# Native only: exercises the logic layer (JSON parsing, DiagnosisStore,
+# SourceStore, NetlistTree structure) without SDL/OpenGL/naja. Links only
+# ImGui's core (imgui.cpp/imgui_draw.cpp/imgui_tables.cpp/imgui_widgets.cpp),
+# not the SDL2/OpenGL3 backends, since none of the tested code needs a real
+# render backend -- render()/draw calls are never invoked from tests.
+if(NOT EMSCRIPTEN_BUILD)
+  option(NAJA_SCHEMATIC_BUILD_TESTS "Build naja-schematic-tests" ON)
+  if(NAJA_SCHEMATIC_BUILD_TESTS)
+    # naja (added above) already vendors its own googletest copy
+    # (thirdparty/naja/thirdparty/googletest, EXCLUDE_FROM_ALL) and defines
+    # gtest/gtest_main targets from it. Only add ours if those aren't
+    # already present, since CMake target names must be unique build-wide.
+    if(NOT TARGET gtest_main)
+      set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+      set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+      add_subdirectory(thirdparty/googletest)
+    endif()
+
+    file(GLOB NAJA_SCHEMATIC_TEST_SOURCES tests/*.cpp)
+
+    add_executable(naja-schematic-tests
+      src/Console.cpp
+      src/Types.cpp
+      src/GUIData.cpp
+      src/NetlistTree.cpp
+      src/DiagnosisStore.cpp
+      src/SourceStore.cpp
+      ${IMGUI_DIR}/imgui.cpp
+      ${IMGUI_DIR}/imgui_draw.cpp
+      ${IMGUI_DIR}/imgui_tables.cpp
+      ${IMGUI_DIR}/imgui_widgets.cpp
+      ${NAJA_SCHEMATIC_TEST_SOURCES}
+    )
+    target_link_libraries(naja-schematic-tests PRIVATE gtest_main)
+
+    enable_testing()
+    include(GoogleTest)
+    gtest_discover_tests(naja-schematic-tests)
+  endif()
+endif()
