@@ -128,6 +128,26 @@ This project is under active development as part of an evolving AI
 RTL-diagnosis workflow. Interfaces (in particular the wire protocol and the
 `diagnosis_response` shape) may still change.
 
+## Reporting Issues
+
+This project is beta — if something breaks, crashes, or looks wrong, please
+[file a GitHub issue](https://github.com/najaeda/naja-schematic/issues/new).
+Before reporting, check for error output in the relevant places:
+
+- **Native build**: the terminal you launched `naja-schematic-standalone`
+  from.
+- **WASM build**: there are *two* separate places to check, since a WASM
+  session has two live processes —
+  - the terminal running `python3 scripts/najaeda_server.py` (netlist
+    parsing/serving errors surface here), and
+  - the browser's JavaScript console (Cmd+Opt+J in Chrome, Cmd+Opt+K in
+    Firefox; in VSCode's webview, use "Developer: Open Webview Developer
+    Tools" from the command palette) — this is where WASM runtime errors,
+    WebSocket issues, and rendering problems show up.
+
+Please include the relevant console output (both, for WASM issues), the
+netlist/diagnosis files involved if possible, and steps to reproduce.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
