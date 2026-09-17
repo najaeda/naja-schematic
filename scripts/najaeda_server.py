@@ -223,6 +223,11 @@ async def handle_connection(websocket):
                         "name": term.getName(),
                         "direction": direction_to_int(term.getDirection()),
                         "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
+                        "design_ref": {
+                            "db_id": inst_model.getDB().getID(),
+                            "library_id": inst_model.getLibrary().getID(),
+                            "design_id": inst_model.getID(),
+                        },
                         "has_instances": has_instances,
                         "source_loc": get_source_loc(instTerm.getInstance())
                     })
@@ -236,6 +241,42 @@ async def handle_connection(websocket):
                 await websocket.send(json.dumps({
                     "response": "equipotential_response",
                     "occurrences": occurrences,
+                    "terms": terms
+                }))
+
+            elif req_type == "expand_instance_terms":
+                path_key = request.get("path_key", "")
+                design_ref = get_design_ref(design_ref_message)
+                print(f"🔎 expand_instance_terms for path_key={path_key!r} design_ref={design_ref}")
+                design = u.getSNLDesign(design_ref) if design_ref else None
+                if not design:
+                    print(f"⚠️ expand_instance_terms: design not found for {design_ref}")
+                terms = []
+
+                if design:
+                    for term in design.getTerms():
+                        if isinstance(term, naja.SNLBusTerm):
+                            lo, hi = sorted((term.getLSB(), term.getMSB()))
+                            for b in range(lo, hi + 1):
+                                bit_term = term.getBusTermBit(b)
+                                if bit_term:
+                                    terms.append({
+                                        "name": f"{term.getName()}[{b}]",
+                                        "child_id": bit_term.getID(),
+                                        "direction": direction_to_int(bit_term.getDirection()),
+                                        "bit": b,
+                                    })
+                        else:
+                            terms.append({
+                                "name": term.getName(),
+                                "child_id": term.getID(),
+                                "direction": direction_to_int(term.getDirection()),
+                            })
+
+                print(f"📤 Sending expanded_instance_terms for {path_key!r}: {len(terms)} terms")
+                await websocket.send(json.dumps({
+                    "response": "expanded_instance_terms",
+                    "path_key": path_key,
                     "terms": terms
                 }))
 

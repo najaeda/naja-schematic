@@ -130,30 +130,14 @@ static json sourceLocJson(const SNLDesignObject* obj) {
   };
 }
 
-// Resolve the DB for a request's db_id (falls back to DB0 if not found in user DBs).
-static NLDB* resolveDB(unsigned dbId) {
-  auto* universe = NLUniverse::get();
-  if (auto* db = universe->getDB(static_cast<NLID::DBID>(dbId))) return db;
-  return nullptr;
+// Find a design matching {dbId, libId, designId}.
+static SNLDesign* findDesign(unsigned dbId, unsigned libId, unsigned designId) {
+  return NLUniverse::get()->getSNLDesign(NLID::DesignReference(
+      static_cast<NLID::DBID>(dbId), static_cast<NLID::LibraryID>(libId),
+      static_cast<NLID::DesignID>(designId)));
 }
 
-// Recursively search all libraries in a DB for a design matching {libId, designId}.
-static SNLDesign* findDesign(NLDB* db, NLID::LibraryID libId, NLID::DesignID designId) {
-  std::function<SNLDesign*(NLLibrary*)> search = [&](NLLibrary* lib) -> SNLDesign* {
-    if (lib->getID() == libId) {
-      auto* d = lib->getSNLDesign(designId);
-      if (d) return d;
-    }
-    for (auto* sub : lib->getLibraries())
-      if (auto* d = search(sub)) return d;
-    return nullptr;
-  };
-  for (auto* lib : db->getLibraries())
-    if (auto* d = search(lib)) return d;
-  return nullptr;
-}
-
-static void dumpDB(NLDB* db) {
+static void dumpDB() {
   std::function<void(NLLibrary*, int)> dumpLib = [&](NLLibrary* lib, int indent) {
     std::string pad(indent * 2, ' ');
     Console::Log(pad + "lib id=" + std::to_string(lib->getID()) +
@@ -443,41 +427,37 @@ std::string LocalSNLProvider::buildInstancesResponse(
 {
   json children = json::array();
 
-  auto* targetDB = resolveDB(dbId);
-  if (targetDB) {
-    auto* design = findDesign(targetDB, static_cast<NLID::LibraryID>(libId),
-                                        static_cast<NLID::DesignID>(designId));
-    if (!design) {
-      Console::Error("buildInstancesResponse: design not found db=" + std::to_string(dbId) +
-                     " lib=" + std::to_string(libId) + " design=" + std::to_string(designId));
-      dumpDB(targetDB);
-    }
+  auto* design = findDesign(dbId, libId, designId);
+  if (!design) {
+    Console::Error("buildInstancesResponse: design not found db=" + std::to_string(dbId) +
+                   " lib=" + std::to_string(libId) + " design=" + std::to_string(designId));
+    dumpDB();
+  }
 
-    if (design) {
-      auto instances = primitives
-        ? design->getPrimitiveInstances()
-        : design->getNonPrimitiveInstances();
+  if (design) {
+    auto instances = primitives
+      ? design->getPrimitiveInstances()
+      : design->getNonPrimitiveInstances();
 
-      for (auto* inst : instances) {
-        auto* model = inst->getModel();
-        if (model && NLDB0::isAssign(model)) {
-          continue;
-        }
-        children.push_back({
-          {"name",       instanceName(inst)},
-          {"model_name", model ? designName(model) : ""},
-          {"child_id",   static_cast<unsigned>(inst->getID())},
-          {"design_ref", {
-            {"db_id",      model ? static_cast<unsigned>(model->getDB()->getID()) : 0u},
-            {"library_id", model ? static_cast<unsigned>(model->getLibrary()->getID()) : 0u},
-            {"design_id",  model ? static_cast<unsigned>(model->getID()) : 0u}
-          }},
-          {"has_terms",      model && !model->getTerms().empty()},
-          {"has_primitives", model && hasVisiblePrimitiveInstances(model)},
-          {"has_instances",  model && !model->getNonPrimitiveInstances().empty()},
-          {"source_loc",     sourceLocJson(inst)}
-        });
+    for (auto* inst : instances) {
+      auto* model = inst->getModel();
+      if (model && NLDB0::isAssign(model)) {
+        continue;
       }
+      children.push_back({
+        {"name",       instanceName(inst)},
+        {"model_name", model ? designName(model) : ""},
+        {"child_id",   static_cast<unsigned>(inst->getID())},
+        {"design_ref", {
+          {"db_id",      model ? static_cast<unsigned>(model->getDB()->getID()) : 0u},
+          {"library_id", model ? static_cast<unsigned>(model->getLibrary()->getID()) : 0u},
+          {"design_id",  model ? static_cast<unsigned>(model->getID()) : 0u}
+        }},
+        {"has_terms",      model && !model->getTerms().empty()},
+        {"has_primitives", model && hasVisiblePrimitiveInstances(model)},
+        {"has_instances",  model && !model->getNonPrimitiveInstances().empty()},
+        {"source_loc",     sourceLocJson(inst)}
+      });
     }
   }
 
@@ -493,33 +473,29 @@ std::string LocalSNLProvider::buildTermsResponse(
 {
   json children = json::array();
 
-  auto* targetDB = resolveDB(dbId);
-  if (targetDB) {
-    auto* design = findDesign(targetDB, static_cast<NLID::LibraryID>(libId),
-                                        static_cast<NLID::DesignID>(designId));
-    if (!design) {
-      Console::Error("buildTermsResponse: design not found db=" + std::to_string(dbId) +
-                     " lib=" + std::to_string(libId) + " design=" + std::to_string(designId));
-      dumpDB(targetDB);
-    }
+  auto* design = findDesign(dbId, libId, designId);
+  if (!design) {
+    Console::Error("buildTermsResponse: design not found db=" + std::to_string(dbId) +
+                   " lib=" + std::to_string(libId) + " design=" + std::to_string(designId));
+    dumpDB();
+  }
 
-    if (design) {
-      for (auto* term : design->getTerms()) {
-        if (auto* bt = dynamic_cast<SNLBusTerm*>(term)) {
-          // Bus term: emit as a single entry with msb/lsb. Use the plain
-          // base name (no "[msb:lsb]" suffix) -- the client appends the
-          // range itself from msb/lsb, so getString() here would double it.
-          json t = {
-            {"name",      bt->getName().getString()},
-            {"child_id",  static_cast<unsigned>(bt->getID())},
-            {"direction", snlDirToInt(bt->getDirection())},
-            {"msb",       static_cast<int>(bt->getMSB())},
-            {"lsb",       static_cast<int>(bt->getLSB())}
-          };
-          children.push_back(std::move(t));
-        } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
-          children.push_back(bitTermJson(st));
-        }
+  if (design) {
+    for (auto* term : design->getTerms()) {
+      if (auto* bt = dynamic_cast<SNLBusTerm*>(term)) {
+        // Bus term: emit as a single entry with msb/lsb. Use the plain
+        // base name (no "[msb:lsb]" suffix) -- the client appends the
+        // range itself from msb/lsb, so getString() here would double it.
+        json t = {
+          {"name",      bt->getName().getString()},
+          {"child_id",  static_cast<unsigned>(bt->getID())},
+          {"direction", snlDirToInt(bt->getDirection())},
+          {"msb",       static_cast<int>(bt->getMSB())},
+          {"lsb",       static_cast<int>(bt->getLSB())}
+        };
+        children.push_back(std::move(t));
+      } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
+        children.push_back(bitTermJson(st));
       }
     }
   }
@@ -660,34 +636,29 @@ std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) 
   }
 
   json terms = json::array();
-  auto* targetDB = resolveDB(dbId);
-  if (targetDB) {
-    auto* design = findDesign(targetDB,
-                              static_cast<NLID::LibraryID>(libId),
-                              static_cast<NLID::DesignID>(designId));
-    if (design) {
-      for (auto* term : design->getTerms()) {
-        if (auto* bus = dynamic_cast<SNLBusTerm*>(term)) {
-          // Expand bus into individual bits so each gets its own port indicator.
-          int lo = std::min(static_cast<int>(bus->getLSB()),
-                            static_cast<int>(bus->getMSB()));
-          int hi = std::max(static_cast<int>(bus->getLSB()),
-                            static_cast<int>(bus->getMSB()));
-          for (int b = lo; b <= hi; ++b) {
-            if (auto* bit = bus->getBit(b)) {
-              json t = bitTermJson(bit);
-              // Append the bit index to the name for display ("data[3]"),
-              // but keep the "bit" field so the client can build requests.
-              if (t.contains("bit")) {
-                t["name"] = t["name"].get<std::string>() +
-                            "[" + std::to_string(t["bit"].get<int>()) + "]";
-              }
-              terms.push_back(std::move(t));
+  auto* design = findDesign(dbId, libId, designId);
+  if (design) {
+    for (auto* term : design->getTerms()) {
+      if (auto* bus = dynamic_cast<SNLBusTerm*>(term)) {
+        // Expand bus into individual bits so each gets its own port indicator.
+        int lo = std::min(static_cast<int>(bus->getLSB()),
+                          static_cast<int>(bus->getMSB()));
+        int hi = std::max(static_cast<int>(bus->getLSB()),
+                          static_cast<int>(bus->getMSB()));
+        for (int b = lo; b <= hi; ++b) {
+          if (auto* bit = bus->getBit(b)) {
+            json t = bitTermJson(bit);
+            // Append the bit index to the name for display ("data[3]"),
+            // but keep the "bit" field so the client can build requests.
+            if (t.contains("bit")) {
+              t["name"] = t["name"].get<std::string>() +
+                          "[" + std::to_string(t["bit"].get<int>()) + "]";
             }
+            terms.push_back(std::move(t));
           }
-        } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
-          terms.push_back(bitTermJson(st));
         }
+      } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
+        terms.push_back(bitTermJson(st));
       }
     }
   }
@@ -717,81 +688,77 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
   json children = json::array();
   json nets     = json::array();
 
-  auto* targetDB = resolveDB(dbId);
-  if (targetDB) {
-    auto* model = findDesign(targetDB, static_cast<NLID::LibraryID>(libId),
-                                       static_cast<NLID::DesignID>(designId));
-    if (model) {
-      // Children: everything one level down, primitive or not — the nested
-      // box shows the model's actual contents, not split by tree group.
-      for (auto* inst : model->getNonPrimitiveInstances()) {
-        auto* sub = inst->getModel();
-        children.push_back({
-          {"name",       instanceName(inst)},
-          {"model_name", sub ? designName(sub) : ""},
-          {"child_id",   static_cast<unsigned>(inst->getID())},
-          {"design_ref", {
-            {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
-            {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},
-            {"design_id",  sub ? static_cast<unsigned>(sub->getID()) : 0u}
-          }},
-          {"has_terms",      sub && !sub->getTerms().empty()},
-          {"has_primitives", sub && hasVisiblePrimitiveInstances(sub)},
-          {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()},
-          {"source_loc",     sourceLocJson(inst)}
-        });
-      }
-      for (auto* inst : model->getPrimitiveInstances()) {
-        auto* sub = inst->getModel();
-        if (sub && NLDB0::isAssign(sub)) continue;
-        children.push_back({
-          {"name",       instanceName(inst)},
-          {"model_name", sub ? designName(sub) : ""},
-          {"child_id",   static_cast<unsigned>(inst->getID())},
-          {"design_ref", {
-            {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
-            {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},
-            {"design_id",  sub ? static_cast<unsigned>(sub->getID()) : 0u}
-          }},
-          {"has_terms",      sub && !sub->getTerms().empty()},
-          {"has_primitives", sub && hasVisiblePrimitiveInstances(sub)},
-          {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()},
-          {"source_loc",     sourceLocJson(inst)}
-        });
-      }
+  auto* model = findDesign(dbId, libId, designId);
+  if (model) {
+    // Children: everything one level down, primitive or not — the nested
+    // box shows the model's actual contents, not split by tree group.
+    for (auto* inst : model->getNonPrimitiveInstances()) {
+      auto* sub = inst->getModel();
+      children.push_back({
+        {"name",       instanceName(inst)},
+        {"model_name", sub ? designName(sub) : ""},
+        {"child_id",   static_cast<unsigned>(inst->getID())},
+        {"design_ref", {
+          {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
+          {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},
+          {"design_id",  sub ? static_cast<unsigned>(sub->getID()) : 0u}
+        }},
+        {"has_terms",      sub && !sub->getTerms().empty()},
+        {"has_primitives", sub && hasVisiblePrimitiveInstances(sub)},
+        {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()},
+        {"source_loc",     sourceLocJson(inst)}
+      });
+    }
+    for (auto* inst : model->getPrimitiveInstances()) {
+      auto* sub = inst->getModel();
+      if (sub && NLDB0::isAssign(sub)) continue;
+      children.push_back({
+        {"name",       instanceName(inst)},
+        {"model_name", sub ? designName(sub) : ""},
+        {"child_id",   static_cast<unsigned>(inst->getID())},
+        {"design_ref", {
+          {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
+          {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},
+          {"design_id",  sub ? static_cast<unsigned>(sub->getID()) : 0u}
+        }},
+        {"has_terms",      sub && !sub->getTerms().empty()},
+        {"has_primitives", sub && hasVisiblePrimitiveInstances(sub)},
+        {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()},
+        {"source_loc",     sourceLocJson(inst)}
+      });
+    }
 
-      // Internal nets: split each net's components into sub-instance pins
-      // (SNLInstTerm) vs the model's own boundary ports (SNLBitTerm) so the
-      // client can tell a child-to-child wire from a pass-through to this
-      // instance's own external port. Nets with fewer than two live
-      // endpoints don't need drawing.
-      auto emitBitNet = [&](SNLBitNet* bn, const std::string& name, std::optional<int> bit) {
-        json pins = json::array();
-        for (auto* comp : bn->getComponents()) {
-          if (auto* it = dynamic_cast<SNLInstTerm*>(comp)) {
-            auto pin = bitTermJson(it->getBitTerm());
-            pin["inst_id"] = static_cast<unsigned>(it->getInstance()->getID());
-            pins.push_back(std::move(pin));
-          } else if (auto* bt = dynamic_cast<SNLBitTerm*>(comp)) {
-            pins.push_back(bitTermJson(bt));
-          }
+    // Internal nets: split each net's components into sub-instance pins
+    // (SNLInstTerm) vs the model's own boundary ports (SNLBitTerm) so the
+    // client can tell a child-to-child wire from a pass-through to this
+    // instance's own external port. Nets with fewer than two live
+    // endpoints don't need drawing.
+    auto emitBitNet = [&](SNLBitNet* bn, const std::string& name, std::optional<int> bit) {
+      json pins = json::array();
+      for (auto* comp : bn->getComponents()) {
+        if (auto* it = dynamic_cast<SNLInstTerm*>(comp)) {
+          auto pin = bitTermJson(it->getBitTerm());
+          pin["inst_id"] = static_cast<unsigned>(it->getInstance()->getID());
+          pins.push_back(std::move(pin));
+        } else if (auto* bt = dynamic_cast<SNLBitTerm*>(comp)) {
+          pins.push_back(bitTermJson(bt));
         }
-        if (pins.size() < 2) return;
-        json n = {{"name", name}, {"pins", std::move(pins)}};
-        if (bit.has_value()) n["bit"] = *bit;
-        nets.push_back(std::move(n));
-      };
+      }
+      if (pins.size() < 2) return;
+      json n = {{"name", name}, {"pins", std::move(pins)}};
+      if (bit.has_value()) n["bit"] = *bit;
+      nets.push_back(std::move(n));
+    };
 
-      for (auto* net : model->getNets()) {
-        if (auto* bus = dynamic_cast<SNLBusNet*>(net)) {
-          int lo = std::min(static_cast<int>(bus->getLSB()), static_cast<int>(bus->getMSB()));
-          int hi = std::max(static_cast<int>(bus->getLSB()), static_cast<int>(bus->getMSB()));
-          for (int b = lo; b <= hi; ++b) {
-            if (auto* bit = bus->getBit(b)) emitBitNet(bit, bus->getString(), b);
-          }
-        } else if (auto* bn = dynamic_cast<SNLBitNet*>(net)) {
-          emitBitNet(bn, bn->getString(), std::nullopt);
+    for (auto* net : model->getNets()) {
+      if (auto* bus = dynamic_cast<SNLBusNet*>(net)) {
+        int lo = std::min(static_cast<int>(bus->getLSB()), static_cast<int>(bus->getMSB()));
+        int hi = std::max(static_cast<int>(bus->getLSB()), static_cast<int>(bus->getMSB()));
+        for (int b = lo; b <= hi; ++b) {
+          if (auto* bit = bus->getBit(b)) emitBitNet(bit, bus->getString(), b);
         }
+      } else if (auto* bn = dynamic_cast<SNLBitNet*>(net)) {
+        emitBitNet(bn, bn->getString(), std::nullopt);
       }
     }
   }
