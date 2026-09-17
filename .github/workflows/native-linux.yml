@@ -34,3 +34,7 @@ jobs:
 
       - name: Check binary exists
         run: file build-linux/naja-schematic-standalone
+
+      - name: Run tests
+        working-directory: build-linux
+        run: ctest --output-on-failure

@@ -42,3 +42,7 @@ jobs:
 
       - name: Check binary exists
         run: file ../naja-schematic-build/native-debug/naja-schematic-standalone
+
+      - name: Run tests
+        working-directory: ../naja-schematic-build/native-debug
+        run: ctest --output-on-failure
