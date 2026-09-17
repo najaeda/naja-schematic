@@ -60,6 +60,11 @@ path = [
   "src/WebSocketProvider.h",
   "src/main_native.cpp",
   "src/main_wasm.cpp",
+  "tests/DiagnosisStoreTest.cpp",
+  "tests/FakeNetlistProvider.h",
+  "tests/NetlistTreeTest.cpp",
+  "tests/SourceStoreTest.cpp",
+  "tests/TypesJsonTest.cpp",
 ]
 SPDX-FileCopyrightText = "2026 najaeda contributors"
 SPDX-License-Identifier = "Apache-2.0"
