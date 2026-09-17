@@ -6,6 +6,23 @@ import websockets
 import json
 
 PORT = 8081
+MIN_NAJAEDA_VERSION = (0, 7, 24)
+
+
+def check_najaeda_version():
+    version_str = naja.getVersion()
+    try:
+        version = tuple(int(p) for p in version_str.split("."))
+    except ValueError:
+        print(f"⚠️ Could not parse najaeda version {version_str!r}; skipping version check")
+        return
+    if version < MIN_NAJAEDA_VERSION:
+        min_str = ".".join(str(p) for p in MIN_NAJAEDA_VERSION)
+        raise SystemExit(
+            f"najaeda {version_str} is too old (need >= {min_str}, for "
+            f"SNLEquipotential.Mode support used by load_equipotential). "
+            f"Upgrade with: pip install -U najaeda"
+        )
 
 def get_design_ref(ref_msg):
     if not ref_msg:
@@ -378,6 +395,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    check_najaeda_version()
+
     parser = argparse.ArgumentParser(description="najaeda WebSocket Server")
     parser.add_argument("--port", type=int, default=8081,
                         help="Port to run the websocket server on (default: 8081)")
