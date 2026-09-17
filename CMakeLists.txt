@@ -57,7 +57,13 @@ include_directories(
   ${IMGUI_DIR}
   ${IMGUI_DIR}/backends
   ${CMAKE_SOURCE_DIR}/thirdparty
+  ${CMAKE_SOURCE_DIR}/src
 )
+
+# 32-bit ImDrawIdx: see src/imgui_user_config.h for why (16-bit indices cap
+# a single ImDrawList at 64K vertices, which the WASM/WebGL backend -- unlike
+# desktop GL 3.2+ -- has no way to work around).
+add_compile_definitions(IMGUI_USER_CONFIG="imgui_user_config.h")
 
 # ------------------------------------------------------------
 # Core application sources (no platform-specific I/O)

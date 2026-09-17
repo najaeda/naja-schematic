@@ -22,11 +22,23 @@ inline float clampf(float v, float lo, float hi) {
 // screen size a label is hidden outright (an unreadable smear is worse than
 // no label); above a cap it stops growing so heavy zoom-in doesn't blow up
 // glyphs into blurry blocks.
+//
+// Pin dots (which is what a top-level term renders as -- see
+// EquipotentialView's zero-size term stubs) and wires follow the same
+// shrink-then-vanish policy instead of being held at an artificial minimum
+// pixel size forever: at extreme zoom-out they fade out of existence just
+// like their labels already do, rather than persisting as a fixed-size
+// clutter of dots/lines under illegible text.
 // ---------------------------------------------------------------------------
 constexpr float kInstanceLabelBaseSize = 13.0f; // world-space "1x zoom" size
 constexpr float kPortLabelBaseSize     = 11.0f;
 constexpr float kMinLabelFontSize      = 7.0f;
 constexpr float kMaxLabelFontSize      = 30.0f;
+
+constexpr float kPortDotBaseSize  = 3.5f; // world-space "1x zoom" pin dot radius
+constexpr float kMinPortDotSize   = 1.5f;
+constexpr float kWireBaseThickness = 2.0f; // world-space "1x zoom" wire thickness
+constexpr float kMinWireThickness  = 0.75f;
 
 // Returns 0.0f when the label would render too small to read -- callers
 // should skip drawing (and any backing rect) in that case.
@@ -34,6 +46,13 @@ float labelFontSize(float baseSize, float scale) {
     float sz = baseSize * scale;
     if (sz < kMinLabelFontSize) return 0.0f;
     return std::min(sz, kMaxLabelFontSize);
+}
+
+// Same shrink-then-vanish policy as labelFontSize(), for elements (pin dots,
+// wires) with no upper cap on how large they should grow when zoomed in.
+float zoomedSizeOrHidden(float baseSize, float scale, float minPx) {
+    float sz = baseSize * scale;
+    return sz < minPx ? 0.0f : sz;
 }
 
 // Picks black or white text (by relative luminance) so a label stays legible
@@ -140,6 +159,9 @@ static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
                       const SchematicView& sv,
                       const ImVec2& canvasPos, const ImVec2& canvasSize) {
     for (const auto& p : inst.ports) {
+        float dotR = zoomedSizeOrHidden(kPortDotBaseSize, sv.transform.scale, kMinPortDotSize);
+        if (dotR <= 0.0f) continue; // too small to matter at this zoom -- same fade policy as labels
+
         ImVec2 worldP  = sv.portWorldPos(inst, p);
         ImVec2 screenP = sv.worldToScreen(worldP, canvasPos, canvasSize);
         bool   isLeft  = p.lx < 0.0f;
@@ -148,7 +170,6 @@ static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
             : (p.isInput ? IM_COL32(200, 80, 80, 255)
                          : IM_COL32(80, 200, 80, 255));
 
-        float dotR = std::max(3.0f, 3.5f * sv.transform.scale);
         dl->AddCircleFilled(screenP, dotR, portColor);
         // A merged bus pin gets an extra ring so it reads as "thicker" than
         // a scalar/single-bit pin, in addition to its "[hi:lo]" label.
@@ -309,6 +330,11 @@ void SchematicView::drawNet(ImDrawList* dl, const NetWire& net, const ImVec2& ca
     float srcSide = (srcPort->lx >= 0.0f) ? 1.0f : -1.0f;
     float dstSide = (dstPort->lx >= 0.0f) ? 1.0f : -1.0f;
 
+    // Too thin to matter at this zoom -- same fade policy as labels/pin dots.
+    float thickness = zoomedSizeOrHidden(kWireBaseThickness, transform.scale, kMinWireThickness);
+    if (thickness <= 0.0f) return;
+    if (net.isBus) thickness *= 2.0f;
+
     const float stub = std::max(12.0f, 18.0f * transform.scale);
 
     // Depart/arrive with a short stub so the wire leaves the box orthogonally.
@@ -322,8 +348,6 @@ void SchematicView::drawNet(ImDrawList* dl, const NetWire& net, const ImVec2& ca
 
     std::array<ImVec2, 6> points = {p0, p1, p2, p3, p4, p5};
     ImU32 col = net.color;
-    float thickness = std::max(1.0f, 2.0f * transform.scale);
-    if (net.isBus) thickness *= 2.0f;
 
     // Draw segments individually to keep thickness consistent at joints.
     for (size_t i = 0; i + 1 < points.size(); ++i) {
