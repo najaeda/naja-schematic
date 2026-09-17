@@ -3,6 +3,7 @@
 [![Native macOS Build](https://github.com/najaeda/naja-schematic/actions/workflows/native-macos.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/native-macos.yml)
 [![Native Linux Build](https://github.com/najaeda/naja-schematic/actions/workflows/native-linux.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/native-linux.yml)
 [![Emscripten Build](https://github.com/najaeda/naja-schematic/actions/workflows/emscripten.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/emscripten.yml)
+[![REUSE status](https://api.reuse.software/badge/github.com/najaeda/naja-schematic)](https://api.reuse.software/info/github.com/najaeda/naja-schematic)
 
 > **Note:** This is a proof of concept in beta. Expect rough edges, breaking
 > changes, and incomplete features.

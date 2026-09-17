@@ -1,0 +1,94 @@
+version = 1
+SPDX-PackageName = "naja-schematic"
+SPDX-PackageSupplier = "najaeda"
+SPDX-PackageDownloadLocation = "https://github.com/najaeda/naja-schematic"
+
+# Project's own sources, build config, docs, and scripts.
+# Listed explicitly (rather than "**") so the three exceptions below
+# never end up double-annotated with both their real license and this one.
+[[annotations]]
+path = [
+  ".github/workflows/emscripten.yml",
+  ".github/workflows/native-linux.yml",
+  ".github/workflows/native-macos.yml",
+  ".gitignore",
+  ".gitmodules",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "CMakeLists.txt",
+  "CMakePresets.json",
+  "README.md",
+  "scripts/fakeram45_64x32.lib",
+  "scripts/najaeda_server.py",
+  "scripts/test_server.py",
+  "scripts/tinyrocket.v",
+  "src/AppLogic.cpp",
+  "src/AppLogic.h",
+  "src/Console.cpp",
+  "src/Console.h",
+  "src/DiagnosisStore.cpp",
+  "src/DiagnosisStore.h",
+  "src/DiagnosisView.cpp",
+  "src/DiagnosisView.h",
+  "src/EquipotentialView.cpp",
+  "src/EquipotentialView.h",
+  "src/GUIData.cpp",
+  "src/GUIData.h",
+  "src/INetlistProvider.h",
+  "src/LocalSNLProvider.cpp",
+  "src/LocalSNLProvider.h",
+  "src/NativeFileDialog.h",
+  "src/NativeFileDialog.mm",
+  "src/NativeFileDialogLinux.cpp",
+  "src/NetlistTree.cpp",
+  "src/NetlistTree.h",
+  "src/RenderTypes.h",
+  "src/SchematicView.cpp",
+  "src/SchematicView.h",
+  "src/SourceStore.cpp",
+  "src/SourceStore.h",
+  "src/SourceView.cpp",
+  "src/SourceView.h",
+  "src/Types.cpp",
+  "src/Types.h",
+  "src/Version.h",
+  "src/WebSocketClient.cpp",
+  "src/WebSocketClient.h",
+  "src/WebSocketProvider.cpp",
+  "src/WebSocketProvider.h",
+  "src/main_native.cpp",
+  "src/main_wasm.cpp",
+]
+SPDX-FileCopyrightText = "2026 najaeda contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+# scripts/fakeram45_64x32.lib and scripts/tinyrocket.v are test/example
+# fixtures with no embedded license or copyright notice of their own (a
+# synthetic SRAM Liberty stub and Yosys-synthesized RTL respectively). They
+# are annotated above under this repo's own Apache-2.0 for REUSE purposes;
+# their true upstream provenance/licensing has not been independently
+# verified and should be checked before relying on that.
+
+# Exported copy of thirdparty/imgui's misc/fonts/DroidSans.ttf (Google's
+# Droid Sans, Apache License 2.0), embedded as a compressed C array so both
+# the native and WASM builds have it without filesystem access.
+[[annotations]]
+path = "src/DroidSansFont.h"
+SPDX-FileCopyrightText = "Google Inc."
+SPDX-License-Identifier = "Apache-2.0"
+
+# Derived from Emscripten's html/shell_minimal.html template, which
+# Emscripten dual-licenses under MIT and the University of Illinois/NCSA
+# Open Source License; MIT is used here as the SPDX identifier.
+[[annotations]]
+path = "src/shell_minimal.html"
+SPDX-FileCopyrightText = "The Emscripten Authors"
+SPDX-License-Identifier = "MIT"
+
+# Nangate's Liberty library carries its own proprietary/trade-secret notice
+# (see LICENSES/LicenseRef-Nangate-Proprietary.txt) and is explicitly NOT
+# covered by this repository's Apache-2.0 license.
+[[annotations]]
+path = "scripts/NangateOpenCellLibrary_typical.lib"
+SPDX-FileCopyrightText = "2004-2011 Nangate Inc."
+SPDX-License-Identifier = "LicenseRef-Nangate-Proprietary"
