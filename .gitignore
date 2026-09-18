@@ -4,6 +4,7 @@ build*
 .DS_Store
 .vscode/settings.json
 imgui.ini
+.cache/
 
 # Private, local-only working notes (never shared/committed).
 notes/

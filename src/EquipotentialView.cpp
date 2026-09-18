@@ -64,6 +64,9 @@ static INetlistProvider*  g_provider         = nullptr;
 // Which instance box (if any) the canvas right-click popup currently
 // targets; -1 = the canvas-level menu (Clear all nets / Fit view).
 static int                g_ctxInstanceId    = -1;
+// Which pin (if any) the popup targets; takes precedence over the instance
+// box the pin sits on. -1 = none.
+static int                g_ctxPortId        = -1;
 
 struct OccurrenceInfo { std::string pathKey; DesignRef designRef; std::optional<SourceLoc> sourceLoc; };
 struct PortEquiRequest {
@@ -246,11 +249,21 @@ static void layoutEquipotential(const Equipotential* eq) {
             ? ap.x + kInstW + kColGap    // new receivers go right of driver
             : ap.x - kInstW - kColGap;  // new drivers go left of receiver
         float dy = ap.y;
+        // Two nets can anchor to the same instance (e.g. each input of a
+        // gate in a driver trace) and would otherwise stack their new boxes
+        // at the same spot in the same column: slide down past anything
+        // already placed there.
+        auto isFree = [&](float x, float y) {
+            for (const auto& [key, p] : g_placedPositions)
+                if (std::abs(p.x - x) < kInstW && std::abs(p.y - y) < kInstH + kRowSpacing / 2)
+                    return false;
+            return true;
+        };
         for (const auto& item : items) {
-            if (!item.isTerm) {
-                auto [it, inserted] = g_placedPositions.emplace(item.key(), ImVec2{newX, dy});
-                if (inserted) dy += kInstH + kRowSpacing;
-            }
+            if (item.isTerm || g_placedPositions.count(item.key())) continue;
+            while (!isFree(newX, dy)) dy += kInstH + kRowSpacing;
+            g_placedPositions.emplace(item.key(), ImVec2{newX, dy});
+            dy += kInstH + kRowSpacing;
         }
     }
 }
@@ -493,6 +506,20 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         // the cursor is whichever was appended last.
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
         g_ctxInstanceId = -1;
+        g_ctxPortId     = -1;
+        {
+            // Same hit radius as the double-click pin test further down.
+            const float sc  = std::max(0.01f, g_schematic.transform.scale);
+            const float hr2 = (10.f / sc) * (10.f / sc);
+            for (const auto& inst : g_schematic.instances) {
+                for (const auto& port : inst.ports) {
+                    ImVec2 pw = g_schematic.portWorldPos(inst, port);
+                    float dx = wp.x - pw.x, dy = wp.y - pw.y;
+                    if (dx*dx + dy*dy <= hr2 && g_portEquiByPortId.count(port.id))
+                        g_ctxPortId = port.id;
+                }
+            }
+        }
         for (auto rit = g_schematic.instances.rbegin(); rit != g_schematic.instances.rend(); ++rit) {
             if (rit->w <= 0.f || rit->h <= 0.f) continue;
             if (wp.x < rit->x || wp.x > rit->x + rit->w) continue;
@@ -500,12 +527,26 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (g_occInfoByShapeId.count(rit->id)) g_ctxInstanceId = rit->id;
             break;
         }
+        if (g_ctxPortId >= 0) g_ctxInstanceId = -1;
         ImGui::OpenPopup("##ctx");
     }
     if (ImGui::BeginPopup("##ctx")) {
         auto occIt = g_ctxInstanceId >= 0 ? g_occInfoByShapeId.find(g_ctxInstanceId)
                                           : g_occInfoByShapeId.end();
-        if (occIt != g_occInfoByShapeId.end()) {
+        auto portIt = g_ctxPortId >= 0 ? g_portEquiByPortId.find(g_ctxPortId)
+                                       : g_portEquiByPortId.end();
+        if (portIt != g_portEquiByPortId.end()) {
+            if (ImGui::MenuItem("Trace to Driver") && g_provider) {
+                // Adds to the view (like a pin double-click) instead of
+                // clearing it, so the cone extends what's already shown.
+                json req;
+                req["request"] = "trace_driver";
+                req["path"]    = portIt->second.pathIds;
+                req["term_id"] = portIt->second.termId;
+                if (portIt->second.bit.has_value()) req["bit"] = portIt->second.bit.value();
+                g_provider->send(req.dump());
+            }
+        } else if (occIt != g_occInfoByShapeId.end()) {
             if (occIt->second.sourceLoc.has_value()) {
                 if (ImGui::MenuItem("Show RTL Source") && g_provider) {
                     const auto& loc = *occIt->second.sourceLoc;

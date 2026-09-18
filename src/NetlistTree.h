@@ -35,6 +35,10 @@ class NetlistTree {
     NetlistTreeNode* getNode(unsigned id) const;
     NetlistTreeNode* getRoot() const { return root_; }
     void sendLoadEquipotential(const Path& path, const TermID& termID) const;
+    // Requests the full combinational fan-in cone of the term's net, back to
+    // the drivers (see "trace_driver" in CLAUDE.md). For a bus, pass every bit.
+    void sendTraceDriver(const Path& path, unsigned termChildID,
+                         const std::vector<int>& bits = {}) const;
     INetlistProvider* getProvider() const { return ws_; }
 
     // Called before every tree-initiated equipotential request.

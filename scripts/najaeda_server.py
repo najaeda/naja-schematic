@@ -134,6 +134,162 @@ def resolve_instance_path(top, path):
     return design, instance
 
 
+# Upper bound on nets returned by one trace_driver request (mirrors
+# LocalSNLProvider's kMaxTraceNets): every net is a schematic wire plus its
+# instance boxes, so an unbounded cone through a big design would bury the view.
+MAX_TRACE_NETS = 500
+
+
+def resolve_start_point(top, path_ids, term_id, bit):
+    # The net-component a load_equipotential/trace_driver request starts from:
+    # a top-level bit term (empty path), or the SNLOccurrence of the tail
+    # instance's inst term. Returns None if it can't be resolved.
+    path = get_path(top, path_ids)
+    if path is None:
+        return None
+    if path.empty():
+        term = top.getTermByID(term_id)
+        if term is None:
+            return None
+        if bit is not None:
+            if not isinstance(term, naja.SNLBusTerm):
+                return None
+            return term.getBusTermBit(bit)
+        return term
+    design = path.getModel()
+    term = design.getTermByID(term_id)
+    if term is None:
+        return None
+    if bit is not None:
+        if not isinstance(term, naja.SNLBusTerm):
+            return None
+        term = term.getBusTermBit(bit)
+    inst_term = path.getTailInstance().getInstTerm(term)
+    if inst_term is None:
+        return None
+    return naja.SNLOccurrence(path.getHeadPath(), inst_term)
+
+
+def term_key(term):
+    return ("T", term.getID(),
+            term.getBit() if isinstance(term, naja.SNLBusTermBit) else None)
+
+
+def occurrence_key(occ):
+    inst_term = occ.getInstTerm()
+    return (tuple(inst.getID() for inst in occ.getPath().getInstances()),
+            inst_term.getInstance().getID(),
+            term_key(inst_term.getBitTerm()))
+
+
+def equipotential_to_json(equipotential, sinks=None):
+    # Wire-format body of an equipotential (no "response" key): its top-level
+    # terms plus every leaf inst-term occurrence on the net.
+    # With `sinks` (a set of term_key/occurrence_key values) only the net's
+    # drivers and those listed receivers are emitted -- a driver trace shows
+    # the path it followed, not every reader on the net.
+    occurrences = []
+    terms = []
+    for occ in equipotential.getInstTermOccurrences():
+        instTerm = occ.getInstTerm()
+        if (sinks is not None
+                and instTerm.getDirection() == naja.SNLTerm.Direction.Input
+                and occurrence_key(occ) not in sinks):
+            continue
+        path = [[inst.getName(), inst.getID()] for inst in occ.getPath().getInstances()]
+        path.append([instTerm.getInstance().getName(), instTerm.getInstance().getID()])
+        term = instTerm.getBitTerm()
+        inst_model = instTerm.getInstance().getModel()
+        has_instances = (inst_model.hasNonPrimitiveInstances() or
+                         has_visible_primitive_instances(inst_model))
+        occurrences.append({
+            "path": path,
+            "term_id": term.getID(),
+            "name": term.getName(),
+            "direction": direction_to_int(term.getDirection()),
+            "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
+            "design_ref": {
+                "db_id": inst_model.getDB().getID(),
+                "library_id": inst_model.getLibrary().getID(),
+                "design_id": inst_model.getID(),
+            },
+            "has_instances": has_instances,
+            "source_loc": get_source_loc(instTerm.getInstance())
+        })
+    for term in equipotential.getTerms():
+        # A top-level output is a receiver of the net; an input/inout drives it.
+        if (sinks is not None
+                and term.getDirection() == naja.SNLTerm.Direction.Output
+                and term_key(term) not in sinks):
+            continue
+        terms.append({
+            "name": term.getName(),
+            "child_id": term.getID(),
+            "direction": direction_to_int(term.getDirection()),
+            "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None
+        })
+    return {"occurrences": occurrences, "terms": terms}
+
+
+def equipotential_key(equipotential):
+    # Identity of a net for de-duplicating the cone: the set of things on it.
+    return (frozenset(occurrence_key(occ) for occ in equipotential.getInstTermOccurrences()),
+            frozenset(term_key(term) for term in equipotential.getTerms()))
+
+
+def sink_key(sink):
+    # `sink` is an SNLOccurrence of an inst term, or a top-level bit term.
+    if isinstance(sink, naja.SNLOccurrence):
+        return occurrence_key(sink)
+    return term_key(sink)
+
+
+def trace_driver_cone(starts):
+    # Breadth-first from the start nets toward the drivers, so each net in the
+    # result shares an instance with an earlier one (the layout relies on that
+    # to chain nets left-to-right). The cone ends at sequential cells and at
+    # cells with no timing model (blackboxes): no combinational arc to cross.
+    # Each net carries the receiver pins the trace entered it through (the
+    # start pin, or the input pin of the cell being crossed); a net reached
+    # through several of them accumulates all of them.
+    # Returns ([(SNLEquipotential, sinks)], truncated).
+    mode = naja.SNLEquipotential.Mode.TraverseAssigns
+    cone = []
+    index_of = {}
+
+    def enqueue(sink):
+        equipotential = naja.SNLEquipotential(sink, mode=mode)
+        key = equipotential_key(equipotential)
+        if key not in index_of:
+            index_of[key] = len(cone)
+            cone.append((equipotential, set()))
+        cone[index_of[key]][1].add(sink_key(sink))
+        return key
+
+    for start in starts:
+        if start is not None:
+            enqueue(start)
+
+    i = 0
+    while i < len(cone):
+        for occ in list(cone[i][0].getInstTermOccurrences()):
+            driver = occ.getInstTerm()
+            if driver.getDirection() != naja.SNLTerm.Direction.Output:
+                continue
+            model = driver.getInstance().getModel()
+            if model.isSequential() or not model.hasModeling():
+                continue
+            for inp in naja.SNLInstance.getCombinatorialInputs(driver):
+                sink = naja.SNLOccurrence(occ.getPath(), inp)
+                # Already-known nets don't grow the cone, so only cap new ones.
+                if (len(cone) >= MAX_TRACE_NETS and
+                        equipotential_key(naja.SNLEquipotential(sink, mode=mode)) not in index_of):
+                    return cone, True
+                enqueue(sink)
+        i += 1
+    return cone, False
+
+
 async def send_error(websocket, response_type, gui_id=0):
     await websocket.send(json.dumps({
         "response": response_type,
@@ -248,75 +404,37 @@ async def handle_connection(websocket):
                 term_id = request.get("term_id", {})
                 bit = request.get("bit", None)
                 print(f"⚡ LoadEquipotential request for path: {path_ids} and term_id: {term_id} bit: {bit}")
-                path = get_path(u.getTopDesign(), path_ids)
-                print(f"🏞️ Resolved path: {path}")
-                start_point = None
-                design = None
-                if path.empty():
-                    design = u.getTopDesign()
-                    term = design.getTermByID(term_id)
-                    print(f"🔍 Term resolved: {term}")
-                    if bit is not None:
-                        if not isinstance(term, naja.SNLBusTerm):
-                            print(f"⚠️ Term is not a bus term but bit {bit} was specified")
-                            await send_error(websocket, "equipotential_response")
-                            continue
-                        start_point = term.getBusTermBit(bit)
-                    else:
-                        start_point = term
-                else:
-                    design = path.getModel()
-                    term = design.getTermByID(term_id)
-                    instance = path.getTailInstance()
-                    if bit is not None:
-                        if not isinstance(term, naja.SNLBusTerm):
-                            print(f"⚠️ Term is not a bus term but bit {bit} was specified")
-                            await send_error(websocket, "equipotential_response")
-                            continue
-                        term = term.getBusTermBit(bit)
-                    print(f"🔍 Term resolved: {term}")
-                    inst_term = instance.getInstTerm(term)
-                    print(f"🔗 Instance Term: {inst_term}")
-                    head_path = path.getHeadPath()
-                    start_point = naja.SNLOccurrence(head_path, inst_term)
+                start_point = resolve_start_point(u.getTopDesign(), path_ids, term_id, bit)
                 print(f"🔍 Start point: {start_point}")
+                if start_point is None:
+                    await send_error(websocket, "equipotential_response")
+                    continue
                 equipotential = naja.SNLEquipotential(
                     start_point, mode=naja.SNLEquipotential.Mode.TraverseAssigns)
-                occurrences = []
-                terms = []
-                for occ in equipotential.getInstTermOccurrences():
-                    path = [[inst.getName(), inst.getID()] for inst in occ.getPath().getInstances()]
-                    path.append([occ.getInstTerm().getInstance().getName(), occ.getInstTerm().getInstance().getID()])
-                    instTerm = occ.getInstTerm()
-                    term = instTerm.getBitTerm()
-                    inst_model = instTerm.getInstance().getModel()
-                    has_instances = (inst_model.hasNonPrimitiveInstances() or
-                                     has_visible_primitive_instances(inst_model))
-                    occurrences.append({
-                        "path": path,
-                        "term_id": term.getID(),
-                        "name": term.getName(),
-                        "direction": direction_to_int(term.getDirection()),
-                        "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
-                        "design_ref": {
-                            "db_id": inst_model.getDB().getID(),
-                            "library_id": inst_model.getLibrary().getID(),
-                            "design_id": inst_model.getID(),
-                        },
-                        "has_instances": has_instances,
-                        "source_loc": get_source_loc(instTerm.getInstance())
-                    })
-                for term in equipotential.getTerms():
-                    terms.append({
-                        "name": term.getName(),
-                        "child_id": term.getID(),
-                        "direction": direction_to_int(term.getDirection()),
-                        "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None
-                    })
+                response = equipotential_to_json(equipotential)
+                response["response"] = "equipotential_response"
+                await websocket.send(json.dumps(response))
+
+            elif req_type == "trace_driver":
+                # Full combinational fan-in cone of a term's net, back to the
+                # drivers: one message holding every net in the cone. "bits"
+                # (a list) traces several bits of one bus term at once.
+                path_ids = request.get("path", [])
+                term_id = request.get("term_id", {})
+                bits = request.get("bits", None)
+                print(f"⚡ TraceDriver request for path: {path_ids} and term_id: {term_id} bit: {request.get('bit')} bits: {bits}")
+                top = u.getTopDesign()
+                if bits is not None:
+                    starts = [resolve_start_point(top, path_ids, term_id, b) for b in bits]
+                else:
+                    starts = [resolve_start_point(top, path_ids, term_id, request.get("bit", None))]
+                cone, truncated = trace_driver_cone(starts)
+                if truncated:
+                    print(f"⚠️ trace_driver: cone truncated at {MAX_TRACE_NETS} nets")
                 await websocket.send(json.dumps({
-                    "response": "equipotential_response",
-                    "occurrences": occurrences,
-                    "terms": terms
+                    "response": "trace_driver_response",
+                    "equipotentials": [equipotential_to_json(e, sinks) for e, sinks in cone],
+                    "truncated": truncated
                 }))
 
             elif req_type == "expand_instance_terms":

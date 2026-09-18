@@ -9,6 +9,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -34,6 +35,7 @@
 #include "SNLPath.h"
 #include "SNLOccurrence.h"
 #include "SNLEquipotential.h"
+#include "SNLDesignModeling.h"
 // naja formats
 #include "SNLVRLConstructor.h"
 #include "SNLSVConstructor.h"
@@ -410,6 +412,8 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
     msgCb_(buildNetsResponse(guiId, dbId, libId, designId));
   } else if (request == "load_equipotential") {
     msgCb_(buildEquipotentialResponse(req));
+  } else if (request == "trace_driver") {
+    msgCb_(buildTraceDriverResponse(req));
   } else if (request == "expand_instance_terms") {
     msgCb_(buildExpandInstanceTermsResponse(req));
   } else if (request == "load_instance_internals") {
@@ -578,6 +582,91 @@ std::string LocalSNLProvider::buildNetsResponse(
   }.dump();
 }
 
+// Wire-format body of an equipotential (no "response" key): its top-level
+// terms plus every leaf inst-term occurrence on the net.
+// With `sinks` set, only the net's drivers and those listed receivers (top
+// terms as SNLOccurrence(term), inst terms as (path, instTerm)) are emitted
+// -- a driver trace shows the path it followed, not every reader on the net.
+static json equipotentialJson(const SNLEquipotential& equi,
+                              const std::set<SNLOccurrence>* sinks = nullptr) {
+  json terms = json::array();
+  for (auto* bt : equi.getTermsSet()) {
+    // A top-level output is a receiver of the net; an input/inout drives it.
+    if (sinks && bt->getDirection() == SNLTerm::Direction::Output &&
+        !sinks->count(SNLOccurrence(bt))) continue;
+    terms.push_back(bitTermJson(bt));
+  }
+
+  json occs = json::array();
+  for (const auto& occ : equi.getInstTermOccurrencesSet()) {
+    auto* it = occ.getInstTerm();
+    if (sinks && it->getDirection() == SNLTerm::Direction::Input &&
+        !sinks->count(occ)) continue;
+    auto* bt = it->getBitTerm();
+    json pathArr = json::array();
+    for (auto* inst : occ.getPath().getInstances())
+      pathArr.push_back(json::array({inst->getString(),
+                                     static_cast<unsigned>(inst->getID())}));
+    // The occurrence path is to the parent design; append the instance itself
+    auto* theInst = it->getInstance();
+    pathArr.push_back(json::array({theInst->getString(),
+                                   static_cast<unsigned>(theInst->getID())}));
+    auto entry = bitTermJson(bt);
+    entry["path"] = std::move(pathArr);
+    if (auto* model = theInst->getModel()) {
+      entry["design_ref"] = {
+        {"db_id",      static_cast<unsigned>(model->getDB()->getID())},
+        {"library_id", static_cast<unsigned>(model->getLibrary()->getID())},
+        {"design_id",  static_cast<unsigned>(model->getID())}
+      };
+    }
+    entry["has_instances"] = hasAnySubInstances(theInst->getModel());
+    entry["source_loc"]    = sourceLocJson(theInst);
+    occs.push_back(std::move(entry));
+  }
+  return json{{"terms", std::move(terms)}, {"occurrences", std::move(occs)}};
+}
+
+// Resolves a load_equipotential-style request (path of instance child IDs,
+// term_id, optional bit) to the net-component occurrence an equipotential is
+// computed from. Returns an invalid occurrence when it can't be resolved.
+// `bitOverride`, when set, takes precedence over req["bit"] (lets a bus
+// request fan out over several bits of the same term).
+static SNLOccurrence resolveStartOccurrence(SNLDesign* topDesign,
+                                            const json& req,
+                                            std::optional<int> bitOverride) {
+  SNLPath::PathIDDescriptor pathIDs;
+  if (req.contains("path") && req["path"].is_array())
+    for (auto& pid : req["path"])
+      pathIDs.push_back(static_cast<NLID::DesignObjectID>(pid.get<unsigned>()));
+
+  unsigned termId = req.value("term_id", 0u);
+  std::optional<int> bit = bitOverride;
+  if (!bit && req.contains("bit")) bit = req["bit"].get<int>();
+
+  auto resolveBitTerm = [&](SNLDesign* design) -> SNLBitTerm* {
+    auto* term = design->getTerm(static_cast<NLID::DesignObjectID>(termId));
+    if (!term) return nullptr;
+    if (!bit) return dynamic_cast<SNLBitTerm*>(term);
+    auto* bus = dynamic_cast<SNLBusTerm*>(term);
+    return bus ? bus->getBit(static_cast<NLID::Bit>(*bit)) : nullptr;
+  };
+
+  if (pathIDs.empty()) {
+    // Top-level term
+    auto* bitTerm = resolveBitTerm(topDesign);
+    return bitTerm ? SNLOccurrence(bitTerm) : SNLOccurrence();
+  }
+  // Instance term — occurrence of the tail instance's inst term
+  SNLPath snlPath(topDesign, pathIDs);
+  auto* model = snlPath.getModel();
+  if (!model) return SNLOccurrence();
+  auto* bitTerm = resolveBitTerm(model);
+  if (!bitTerm) return SNLOccurrence();
+  auto* instTerm = snlPath.getTailInstance()->getInstTerm(bitTerm);
+  return instTerm ? SNLOccurrence(snlPath.getHeadPath(), instTerm) : SNLOccurrence();
+}
+
 std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const {
   static const json empty = {
     {"response",    "equipotential_response"},
@@ -588,111 +677,101 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
   auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
   if (!topDesign) return empty.dump();
 
-  // Parse path (instance child IDs from top to the containing instance)
-  SNLPath::PathIDDescriptor pathIDs;
-  if (req.contains("path") && req["path"].is_array())
-    for (auto& pid : req["path"])
-      pathIDs.push_back(static_cast<NLID::DesignObjectID>(pid.get<unsigned>()));
-
-  unsigned termId = req.value("term_id", 0u);
-  bool hasBit = req.contains("bit");
-  NLID::Bit bitVal = hasBit ? static_cast<NLID::Bit>(req["bit"].get<int>()) : 0;
-
-  // Resolve the bit term
-  auto resolveBitTerm = [&](SNLDesign* design) -> SNLBitTerm* {
-    auto* term = design->getTerm(static_cast<NLID::DesignObjectID>(termId));
-    if (!term) return nullptr;
-    if (!hasBit) return dynamic_cast<SNLBitTerm*>(term);
-    auto* bus = dynamic_cast<SNLBusTerm*>(term);
-    return bus ? bus->getBit(bitVal) : nullptr;
-  };
-
   try {
-    if (pathIDs.empty()) {
-      // Top-level term — compute flat equipotential from the bit term directly
-      auto* bitTerm = resolveBitTerm(topDesign);
-      if (!bitTerm) return empty.dump();
-
-      SNLEquipotential equi(bitTerm, SNLEquipotential::Mode::TraverseAssigns);
-
-      json terms = json::array();
-      for (auto* bt : equi.getTermsSet()) terms.push_back(bitTermJson(bt));
-
-      json occs = json::array();
-      for (const auto& occ : equi.getInstTermOccurrencesSet()) {
-        auto* it = occ.getInstTerm();
-        auto* bt = it->getBitTerm();
-        json pathArr = json::array();
-        for (auto* inst : occ.getPath().getInstances())
-          pathArr.push_back(json::array({inst->getString(),
-                                         static_cast<unsigned>(inst->getID())}));
-        // The occurrence path is to the parent design; append the instance itself
-        auto* theInst = it->getInstance();
-        pathArr.push_back(json::array({theInst->getString(),
-                                       static_cast<unsigned>(theInst->getID())}));
-        auto entry = bitTermJson(bt);
-        entry["path"] = std::move(pathArr);
-        if (auto* model = theInst->getModel()) {
-          entry["design_ref"] = {
-            {"db_id",      static_cast<unsigned>(model->getDB()->getID())},
-            {"library_id", static_cast<unsigned>(model->getLibrary()->getID())},
-            {"design_id",  static_cast<unsigned>(model->getID())}
-          };
-        }
-        entry["has_instances"] = hasAnySubInstances(theInst->getModel());
-        entry["source_loc"]    = sourceLocJson(theInst);
-        occs.push_back(std::move(entry));
-      }
-      return json{{"response","equipotential_response"},{"terms",terms},{"occurrences",occs}}.dump();
-
-    } else {
-      // Instance term — build occurrence and compute hierarchical equipotential
-      SNLPath snlPath(topDesign, pathIDs);
-      auto* model = snlPath.getModel();
-      if (!model) return empty.dump();
-
-      auto* bitTerm = resolveBitTerm(model);
-      if (!bitTerm) return empty.dump();
-
-      auto* tailInst = snlPath.getTailInstance();
-      auto* instTerm = tailInst->getInstTerm(bitTerm);
-      if (!instTerm) return empty.dump();
-
-      SNLEquipotential equi(SNLOccurrence(snlPath.getHeadPath(), instTerm),
-                            SNLEquipotential::Mode::TraverseAssigns);
-
-      json terms = json::array();
-      for (auto* bt : equi.getTermsSet()) terms.push_back(bitTermJson(bt));
-
-      json occs = json::array();
-      for (const auto& occ : equi.getInstTermOccurrencesSet()) {
-        auto* it = occ.getInstTerm();
-        auto* bt = it->getBitTerm();
-        json pathArr = json::array();
-        for (auto* inst : occ.getPath().getInstances())
-          pathArr.push_back(json::array({inst->getString(),
-                                         static_cast<unsigned>(inst->getID())}));
-        // The occurrence path is to the parent design; append the instance itself
-        auto* theInst = it->getInstance();
-        pathArr.push_back(json::array({theInst->getString(),
-                                       static_cast<unsigned>(theInst->getID())}));
-        auto entry = bitTermJson(bt);
-        entry["path"] = std::move(pathArr);
-        if (auto* model = theInst->getModel()) {
-          entry["design_ref"] = {
-            {"db_id",      static_cast<unsigned>(model->getDB()->getID())},
-            {"library_id", static_cast<unsigned>(model->getLibrary()->getID())},
-            {"design_id",  static_cast<unsigned>(model->getID())}
-          };
-        }
-        entry["has_instances"] = hasAnySubInstances(theInst->getModel());
-        entry["source_loc"]    = sourceLocJson(theInst);
-        occs.push_back(std::move(entry));
-      }
-      return json{{"response","equipotential_response"},{"terms",terms},{"occurrences",occs}}.dump();
-    }
+    auto start = resolveStartOccurrence(topDesign, req, std::nullopt);
+    if (!start.isValid()) return empty.dump();
+    SNLEquipotential equi(start, SNLEquipotential::Mode::TraverseAssigns);
+    auto response = equipotentialJson(equi);
+    response["response"] = "equipotential_response";
+    return response.dump();
   } catch (const std::exception& e) {
     Console::Error("buildEquipotentialResponse: " + std::string(e.what()));
+    return empty.dump();
+  }
+}
+
+// Upper bound on nets returned by one trace_driver request: every net is a
+// schematic wire plus its instance boxes, so an unbounded cone through a big
+// design would bury the view (and the frame time) rather than help.
+static constexpr size_t kMaxTraceNets = 500;
+
+std::string LocalSNLProvider::buildTraceDriverResponse(const json& req) const {
+  static const json empty = {
+    {"response",       "trace_driver_response"},
+    {"equipotentials", json::array()},
+    {"truncated",      false}
+  };
+
+  auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
+  if (!topDesign) return empty.dump();
+
+  try {
+    // One start per requested bus bit, or the single term/bit otherwise.
+    std::vector<SNLOccurrence> starts;
+    if (req.contains("bits") && req["bits"].is_array()) {
+      for (auto& b : req["bits"])
+        starts.push_back(resolveStartOccurrence(topDesign, req, b.get<int>()));
+    } else {
+      starts.push_back(resolveStartOccurrence(topDesign, req, std::nullopt));
+    }
+
+    // Breadth-first from the start nets toward the drivers, so each net in the
+    // result shares an instance with an earlier one (the layout relies on
+    // that to chain nets left-to-right).
+    // `sinks` = the receiver pins the trace entered this net through (the
+    // start pin, or the input pin of the cell being crossed); a net reached
+    // through several of them accumulates all of them.
+    struct ConeNet {
+      SNLEquipotential          equi;
+      std::set<SNLOccurrence>   sinks;
+    };
+    std::vector<ConeNet> cone;
+    std::map<SNLEquipotential, size_t> indexOf;
+    auto enqueue = [&](const SNLOccurrence& sink) {
+      SNLEquipotential equi(sink, SNLEquipotential::Mode::TraverseAssigns);
+      auto [it, inserted] = indexOf.emplace(equi, cone.size());
+      if (inserted) cone.push_back({std::move(equi), {sink}});
+      else          cone[it->second].sinks.insert(sink);
+    };
+    for (const auto& start : starts)
+      if (start.isValid()) enqueue(start);
+
+    bool truncated = false;
+    for (size_t i = 0; i < cone.size(); ++i) {
+      // Copy: enqueue() below may reallocate `cone`.
+      const auto instTermOccs = cone[i].equi.getInstTermOccurrencesSet();
+      for (const auto& occ : instTermOccs) {
+        auto* driverTerm = occ.getInstTerm();
+        if (driverTerm->getDirection() != SNLTerm::Direction::Output) continue;
+        // The cone ends at sequential cells and at cells with no timing
+        // model (blackboxes): no combinational arc to cross.
+        auto* model = driverTerm->getInstance()->getModel();
+        if (SNLDesignModeling::isSequential(model) ||
+            !SNLDesignModeling::hasModeling(model)) continue;
+        for (auto* input : SNLDesignModeling::getCombinatorialInputs(driverTerm)) {
+          SNLOccurrence sink(occ.getPath(), input);
+          // Already-known nets don't grow the cone, so only cap new ones.
+          if (cone.size() >= kMaxTraceNets &&
+              !indexOf.count(SNLEquipotential(sink, SNLEquipotential::Mode::TraverseAssigns))) {
+            truncated = true; break;
+          }
+          enqueue(sink);
+        }
+        if (truncated) break;
+      }
+      if (truncated) break;
+    }
+    if (truncated)
+      Console::Log("trace_driver: cone truncated at " +
+                    std::to_string(kMaxTraceNets) + " nets");
+
+    json equis = json::array();
+    for (const auto& net : cone) equis.push_back(equipotentialJson(net.equi, &net.sinks));
+    return json{{"response", "trace_driver_response"},
+                {"equipotentials", std::move(equis)},
+                {"truncated", truncated}}.dump();
+  } catch (const std::exception& e) {
+    Console::Error("buildTraceDriverResponse: " + std::string(e.what()));
     return empty.dump();
   }
 }

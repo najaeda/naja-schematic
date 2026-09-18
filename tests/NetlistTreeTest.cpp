@@ -1,4 +1,5 @@
 #include "NetlistTree.h"
+#include <nlohmann/json.hpp>
 
 #include <gtest/gtest.h>
 
@@ -153,4 +154,46 @@ TEST(NetlistTree, SendLoadEquipotentialOmitsBitForNonBusBit) {
 
   ASSERT_EQ(provider.sent.size(), 1u);
   EXPECT_EQ(provider.sent[0], R"({"request":"load_equipotential","path":[],"term_id":4})");
+}
+
+TEST(NetlistTree, SendTraceDriverFormatsScalarRequestAndFiresCallback) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+  bool callbackFired = false;
+  tree.setOnEquipotentialRequest([&] { callbackFired = true; });
+
+  tree.sendTraceDriver({1, 2}, 9);
+
+  ASSERT_EQ(provider.sent.size(), 1u);
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  EXPECT_EQ(req["request"], "trace_driver");
+  EXPECT_EQ(req["path"], (std::vector<unsigned>{1, 2}));
+  EXPECT_EQ(req["term_id"], 9u);
+  EXPECT_FALSE(req.contains("bit"));
+  EXPECT_FALSE(req.contains("bits"));
+  EXPECT_TRUE(callbackFired);
+}
+
+TEST(NetlistTree, SendTraceDriverSingleBitUsesBitKey) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+
+  tree.sendTraceDriver({}, 4, {3});
+
+  ASSERT_EQ(provider.sent.size(), 1u);
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  EXPECT_EQ(req["bit"], 3);
+  EXPECT_FALSE(req.contains("bits"));
+}
+
+TEST(NetlistTree, SendTraceDriverBusSendsOneRequestWithAllBits) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+
+  tree.sendTraceDriver({}, 4, {0, 1, 2});
+
+  ASSERT_EQ(provider.sent.size(), 1u);
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  EXPECT_EQ(req["bits"], (std::vector<int>{0, 1, 2}));
+  EXPECT_FALSE(req.contains("bit"));
 }

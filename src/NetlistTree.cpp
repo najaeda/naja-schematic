@@ -85,6 +85,13 @@ void NetlistTreeNode::render() {
           path,
           NetlistTree::TermID{getChildID(), isBusBit(), getBusBit()});
       }
+      if (ImGui::MenuItem("Trace to Driver")) {
+        NetlistTree::Path path;
+        getPath(path);
+        getTree()->sendTraceDriver(
+          path, getChildID(),
+          isBusBit() ? std::vector<int>{getBusBit()} : std::vector<int>{});
+      }
       if (ImGui::MenuItem("Show Properties")) {
         json req;
         req["request"]  = "get_properties";
@@ -106,6 +113,11 @@ void NetlistTreeNode::render() {
             path,
             NetlistTree::TermID{getChildID(), true, bit});
         }
+      }
+      if (ImGui::MenuItem("Trace Bus to Driver")) {
+        NetlistTree::Path path;
+        getPath(path);
+        getTree()->sendTraceDriver(path, getChildID(), busBits());
       }
       if (ImGui::MenuItem("Show Properties")) {
         json req;
@@ -548,4 +560,18 @@ void NetlistTree::sendLoadEquipotential(const NetlistTree::Path& path, const Ter
   Console::Log("Sending load equipotential request: " + request);
   if (onEquipotentialRequest_) onEquipotentialRequest_();
   ws_->send(request);
+}
+
+void NetlistTree::sendTraceDriver(const NetlistTree::Path& path, unsigned termChildID,
+                                  const std::vector<int>& bits) const {
+  json req;
+  req["request"] = "trace_driver";
+  req["path"]    = path;
+  req["term_id"] = termChildID;
+  // One bit: same shape as load_equipotential. Several: a "bits" list.
+  if (bits.size() == 1)      req["bit"]  = bits.front();
+  else if (bits.size() > 1)  req["bits"] = bits;
+  Console::Log("Sending trace driver request: " + req.dump());
+  if (onEquipotentialRequest_) onEquipotentialRequest_();
+  ws_->send(req.dump());
 }

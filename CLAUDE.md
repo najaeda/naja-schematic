@@ -199,6 +199,36 @@ primitives. A *named* or *bus* constant is still shown — the filter is
 deliberately narrow (unnamed **and** scalar **and** constant 0/1) so it
 only hides the implicit tie-offs, not anything a designer wrote by hand.
 
+`trace_driver`/`trace_driver_response` is "Show Equipotential" extended to the
+whole combinational fan-in cone: same `path`/`term_id`/optional `bit` request
+shape as `load_equipotential` (plus an optional `bits` list to trace several
+bits of one bus term in a single request), but the reply is *one* message
+holding every net in the cone rather than one net:
+
+```json
+{ "response": "trace_driver_response",
+  "equipotentials": [ {"terms": [...], "occurrences": [...]}, ... ],  // each = an equipotential_response body
+  "truncated": false }
+```
+Starting from the requested net, each output pin on it is a driver; if its
+cell has a combinational timing model (`SNLDesignModeling`) the cone crosses
+it and continues with the net on every input pin that arc depends on. It stops
+at sequential cells (flop/latch outputs), cells with no timing model
+(blackboxes) and top-level input terms -- those are the "drivers" the cone
+ends at. Each net lists its drivers plus only the receiver pins the trace
+entered it through (the start pin, or the input pin of the cell being crossed;
+several if the net is reached more than once) -- *not* every reader on the net,
+unlike `equipotential_response`. Nets are returned breadth-first from the
+requested one and de-duplicated, capped at `kMaxTraceNets` (`MAX_TRACE_NETS` in
+`najaeda_server.py`, 500) with `truncated: true` when hit. `AppLogic.cpp` adds
+each to `GUIData` in order; the incremental layout in `EquipotentialView.cpp`
+relies on that ordering (each net shares an already-placed instance with an
+earlier one) to chain the cone right-to-left. Reachable from the tree
+(right-click a term/bus-bit row -> "Trace to Driver", bus row -> "Trace Bus
+to Driver"; both clear the view first, like "Show Equipotential") and from the
+schematic (right-click a pin -> "Trace to Driver"; this one *adds* to the view
+instead of clearing it).
+
 `diagnosis_response` is different: it's a **server push**, not a reply to a
 request (a diagnosis run finishes on its own schedule), and it *annotates*
 the already-loaded netlist rather than loading anything:

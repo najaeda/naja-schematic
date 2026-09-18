@@ -190,6 +190,19 @@ void setupProvider(AppState& state) {
     } else if (resp == "equipotential_response") {
       Console::Log("Equipotential data received");
       state.guiData->addEquipotential(new Equipotential(j.get<Equipotential>()));
+    } else if (resp == "trace_driver_response") {
+      // Nets arrive breadth-first from the traced net toward the drivers, so
+      // adding them in order lets the layout chain each one off an instance
+      // that's already placed.
+      size_t n = 0;
+      if (j.contains("equipotentials") && j["equipotentials"].is_array()) {
+        for (const auto& e : j["equipotentials"]) {
+          state.guiData->addEquipotential(new Equipotential(e.get<Equipotential>()));
+          ++n;
+        }
+      }
+      Console::Log("Driver trace received: " + std::to_string(n) + " net(s)" +
+                   (j.value("truncated", false) ? " (truncated)" : ""));
     } else if (resp == "expanded_instance_terms") {
       std::string pathKey = j.value("path_key", std::string(""));
       std::vector<EquipotentialView::ExpandedPort> ports;
