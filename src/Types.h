@@ -28,10 +28,68 @@ struct SourceLoc {
   int endColumn = 0;
 };
 
+// Coarse gate/cell function classification for an instance, used to pick a
+// standard schematic symbol instead of a generic box (see
+// SchematicView::drawInstance()). naja/najaeda expose no function/timing-arc
+// info -- only a design/cell name string -- so both LocalSNLProvider
+// (native, getPrimitiveType() in LocalSNLProvider.cpp) and najaeda_server.py
+// (WASM/browser, get_primitive_type()) classify independently from that name
+// via a best-effort prefix match, same spirit as their existing isAssign()
+// special case (which maps here to Assign). Unknown is the default for
+// anything that doesn't match -- including ordinary hierarchical modules and
+// blackboxed cells with unrecognized names -- and always falls back to the
+// generic box. Gate arity (2..N inputs) is NOT part of this enum: the actual
+// input port count already carried on InstanceShape::ports is used instead,
+// so no separate arity field needs to travel over the wire.
+enum class PrimitiveType {
+  Unknown = 0,
+  And,
+  Nand,
+  Or,
+  Nor,
+  Xor,
+  Xnor,
+  Inv,
+  Buf,
+  Dff,
+  Assign,
+};
+
+inline const char* toString(PrimitiveType t) {
+  switch (t) {
+    case PrimitiveType::And:    return "and";
+    case PrimitiveType::Nand:   return "nand";
+    case PrimitiveType::Or:     return "or";
+    case PrimitiveType::Nor:    return "nor";
+    case PrimitiveType::Xor:    return "xor";
+    case PrimitiveType::Xnor:   return "xnor";
+    case PrimitiveType::Inv:    return "inv";
+    case PrimitiveType::Buf:    return "buf";
+    case PrimitiveType::Dff:    return "dff";
+    case PrimitiveType::Assign: return "assign";
+    default:                    return "unknown";
+  }
+}
+
+inline PrimitiveType primitiveTypeFromString(const std::string& s) {
+  if (s == "and")    return PrimitiveType::And;
+  if (s == "nand")   return PrimitiveType::Nand;
+  if (s == "or")     return PrimitiveType::Or;
+  if (s == "nor")    return PrimitiveType::Nor;
+  if (s == "xor")    return PrimitiveType::Xor;
+  if (s == "xnor")   return PrimitiveType::Xnor;
+  if (s == "inv")    return PrimitiveType::Inv;
+  if (s == "buf")    return PrimitiveType::Buf;
+  if (s == "dff")    return PrimitiveType::Dff;
+  if (s == "assign") return PrimitiveType::Assign;
+  return PrimitiveType::Unknown;
+}
+
 struct InstanceResponseJson {
   std::string name;
   unsigned child_id;
   std::string model_name;
+  PrimitiveType primitive_type = PrimitiveType::Unknown;
   DesignRef design_ref;
   bool has_primitives;
   bool has_instances;
@@ -85,6 +143,7 @@ struct InstTermOccurrence {
   std::vector<unsigned> pathIds;   // instance child_ids (used to send load_equipotential)
   BitTerm term;
   DesignRef designRef;             // model of the tail instance — used to fetch its full interface
+  PrimitiveType primitiveType = PrimitiveType::Unknown;  // tail instance's model, see PrimitiveType
   // True when the tail instance's own model has sub-instances worth showing
   // in a nested schematic — drives the hierarchy expand/collapse glyph.
   bool has_instances = false;
@@ -236,7 +295,11 @@ struct Port {
 struct InstanceShape {
     int id = 0;
     std::string name;       // instance path (display label)
-    std::string modelName;  // gate/cell type — drives the icon dispatcher in drawInstance()
+    // Gate/cell function classification — drives the standard-shape dispatch
+    // in SchematicView::drawInstance(); PrimitiveType::Unknown draws the
+    // generic box. Actual input-pin count (2..N) comes from `ports` below,
+    // not from this enum.
+    PrimitiveType primitiveType = PrimitiveType::Unknown;
     float x = 0.0f;
     float y = 0.0f;  // world coords (top-left)
     float w = 100.0f;

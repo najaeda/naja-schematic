@@ -218,6 +218,7 @@ void setupProvider(AppState& state) {
           ic.childId = c.value("child_id", 0u);
           if (c.contains("design_ref"))
             ic.designRef = c["design_ref"].get<DesignRef>();
+          ic.primitiveType = primitiveTypeFromString(c.value("primitive_type", std::string("unknown")));
           ic.hasInstances = c.value("has_instances", false) || c.value("has_primitives", false);
           data.children.push_back(std::move(ic));
         }

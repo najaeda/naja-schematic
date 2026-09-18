@@ -2,10 +2,12 @@
 
 #include <imgui.h>
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace {
 inline float clampf(float v, float lo, float hi) {
@@ -80,6 +82,46 @@ std::string truncateToWidth(ImFont* font, float fontSize, const std::string& tex
         if (w + ellipsisWidth <= maxWidth) lo = mid; else hi = mid - 1;
     }
     return text.substr(0, lo) + kEllipsis;
+}
+
+// Screen-space point sampling for gate body outlines (§ standard shapes
+// library, below): a plain vector of points rather than ImDrawList's own
+// Path*() buffer, since a shape needs its points twice (once filled, once
+// stroked as the outline) and Path*() consumes its buffer on Fill/Stroke.
+void appendArcPoints(std::vector<ImVec2>& pts, ImVec2 center, float radius,
+                     float a0, float a1, int segments) {
+    for (int i = 0; i <= segments; ++i) {
+        float t = a0 + (a1 - a0) * (float(i) / float(segments));
+        pts.push_back(ImVec2(center.x + cosf(t) * radius, center.y + sinf(t) * radius));
+    }
+}
+
+void appendQuadBezierPoints(std::vector<ImVec2>& pts, ImVec2 p0, ImVec2 c, ImVec2 p1, int segments) {
+    for (int i = 0; i <= segments; ++i) {
+        float t = float(i) / float(segments);
+        float u = 1.0f - t;
+        pts.push_back(ImVec2(u * u * p0.x + 2.0f * u * t * c.x + t * t * p1.x,
+                              u * u * p0.y + 2.0f * u * t * c.y + t * t * p1.y));
+    }
+}
+
+// Draws a sampled body outline both filled and stroked (plus a thicker
+// diagnosis-severity stroke on top, when flagged) -- shared tail end of every
+// standard gate shape below.
+void fillAndStrokeBody(ImDrawList* dl, const std::vector<ImVec2>& pts,
+                       ImU32 fillColor, ImU32 diagOutline) {
+    dl->AddConvexPolyFilled(pts.data(), int(pts.size()), fillColor);
+    dl->AddPolyline(pts.data(), int(pts.size()), IM_COL32(0, 0, 0, 200), 1.5f, ImDrawFlags_Closed);
+    if (diagOutline != 0)
+        dl->AddPolyline(pts.data(), int(pts.size()), diagOutline, 3.0f, ImDrawFlags_Closed);
+}
+
+// Draws a bubble (small negation circle), touching the tip of a gate body's
+// output side -- shared by NAND/NOR/XNOR/INV.
+void drawNegationBubble(ImDrawList* dl, ImVec2 tip, float radius, ImU32 fillColor) {
+    ImVec2 center(tip.x + radius, tip.y);
+    dl->AddCircleFilled(center, radius, fillColor);
+    dl->AddCircle(center, radius, IM_COL32(0, 0, 0, 200), 16, 1.5f);
 }
 
 // Draws a dashed rectangle in screen space (no corner rounding).
@@ -294,22 +336,179 @@ static void drawAssignInstance(ImDrawList* dl, const InstanceShape& inst,
 }
 
 // ---------------------------------------------------------------------------
-// Gate dispatcher — add new model names here as the library grows
+// Standard shapes library
+//
+// Traditional (non-IEC) gate symbols for PrimitiveType::{And,Nand,Or,Nor,
+// Xor,Xnor,Inv,Buf,Dff}. Input/output pin positions are untouched -- they
+// stay wherever EquipotentialView already placed them (left edge for
+// inputs, right edge for outputs, evenly spaced by portLy()) -- these
+// functions only draw a different body outline than the generic box inside
+// the same inst.x/y/w/h, then call the same shared drawPorts(). Arity
+// (2..N inputs) therefore needs no dedicated handling here: however many
+// input ports the instance actually has already determines their spacing,
+// and the body outline (D-shape / pointed shield / triangle) scales to
+// whatever inst.w/inst.h the caller assigned, same as drawGenericInstance.
+// ---------------------------------------------------------------------------
+
+// AND / NAND — flat back, semicircular (bulging right) front. NAND adds a
+// negation bubble at the tip.
+static void drawAndLikeInstance(ImDrawList* dl, const InstanceShape& inst,
+                                const SchematicView& sv,
+                                const ImVec2& canvasPos, const ImVec2& canvasSize,
+                                bool negated) {
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    float cy = (rmin.y + rmax.y) * 0.5f;
+    float xm = (rmin.x + rmax.x) * 0.5f;
+    float r  = (rmax.y - rmin.y) * 0.5f;
+
+    std::vector<ImVec2> pts;
+    pts.push_back(ImVec2(rmin.x, rmin.y));
+    appendArcPoints(pts, ImVec2(xm, cy), r, -1.5707963f, 1.5707963f, 24);
+    pts.push_back(ImVec2(rmin.x, rmax.y));
+    fillAndStrokeBody(dl, pts, inst.color, inst.diagOutline);
+
+    if (negated) {
+        float bubbleR = std::max(2.5f, r * 0.22f);
+        drawNegationBubble(dl, ImVec2(xm + r, cy), bubbleR, inst.color);
+    }
+
+    drawPorts(dl, inst, sv, canvasPos, canvasSize);
+}
+
+// OR / NOR / XOR / XNOR — curved sides bulging outward to a point on the
+// right; NOR/XNOR add a negation bubble at the tip; XOR/XNOR add the extra
+// curved line just outside the input edge.
+static void drawOrLikeInstance(ImDrawList* dl, const InstanceShape& inst,
+                               const SchematicView& sv,
+                               const ImVec2& canvasPos, const ImVec2& canvasSize,
+                               bool negated, bool exclusive) {
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    float cy = (rmin.y + rmax.y) * 0.5f;
+    float sw = rmax.x - rmin.x;
+    float sh = rmax.y - rmin.y;
+    ImVec2 tip(rmax.x, cy);
+
+    std::vector<ImVec2> pts;
+    pts.push_back(ImVec2(rmin.x, rmin.y));
+    appendQuadBezierPoints(pts, ImVec2(rmin.x, rmin.y),
+                           ImVec2(rmin.x + sw * 0.5f, rmin.y - sh * 0.10f), tip, 16);
+    appendQuadBezierPoints(pts, tip,
+                           ImVec2(rmin.x + sw * 0.5f, rmax.y + sh * 0.10f),
+                           ImVec2(rmin.x, rmax.y), 16);
+    fillAndStrokeBody(dl, pts, inst.color, inst.diagOutline);
+
+    if (exclusive) {
+        float gap = std::max(2.0f, sw * 0.08f);
+        dl->AddLine(ImVec2(rmin.x - gap, rmin.y), ImVec2(rmin.x - gap, rmax.y),
+                    IM_COL32(0, 0, 0, 200), 1.5f);
+    }
+
+    if (negated) {
+        float bubbleR = std::max(2.5f, sh * 0.11f);
+        drawNegationBubble(dl, tip, bubbleR, inst.color);
+    }
+
+    drawPorts(dl, inst, sv, canvasPos, canvasSize);
+}
+
+// INV / BUF — triangle pointing right, same silhouette as the "assign"
+// pass-through shape; INV adds a negation bubble at the tip.
+static void drawBufLikeInstance(ImDrawList* dl, const InstanceShape& inst,
+                                const SchematicView& sv,
+                                const ImVec2& canvasPos, const ImVec2& canvasSize,
+                                bool negated) {
+    ImVec2 tl = sv.worldToScreen(ImVec2(inst.x,          inst.y),          canvasPos, canvasSize);
+    ImVec2 bl = sv.worldToScreen(ImVec2(inst.x,          inst.y + inst.h), canvasPos, canvasSize);
+    ImVec2 mr = sv.worldToScreen(ImVec2(inst.x + inst.w, inst.y + inst.h * 0.5f), canvasPos, canvasSize);
+
+    dl->AddTriangleFilled(tl, bl, mr, inst.color);
+    dl->AddTriangle(tl, bl, mr, IM_COL32(0, 0, 0, 200), 1.5f);
+    if (inst.diagOutline != 0)
+        dl->AddTriangle(tl, bl, mr, inst.diagOutline, 3.0f);
+
+    if (negated) {
+        float bubbleR = std::max(2.5f, (bl.y - tl.y) * 0.11f);
+        drawNegationBubble(dl, mr, bubbleR, inst.color);
+    }
+
+    drawPorts(dl, inst, sv, canvasPos, canvasSize);
+}
+
+// True for a pin name commonly used for a flip-flop's clock input, so
+// drawDffInstance() can mark it with the usual clock-triangle notch.
+static bool looksLikeClockPinName(const std::string& name) {
+    std::string n = name;
+    for (auto& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return n == "clk" || n == "clock" || n == "ck" || n == "c";
+}
+
+// DFF (and other clocked sequential cells) — the generic box, plus the
+// standard clock-triangle notch on the left edge at the clock pin's
+// position, so a flop reads differently from a plain unclassified
+// hierarchical/blackbox instance even though its outline is the same.
+static void drawDffInstance(ImDrawList* dl, const InstanceShape& inst,
+                            const SchematicView& sv,
+                            const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    drawGenericInstance(dl, inst, sv, canvasPos, canvasSize);
+
+    for (const auto& p : inst.ports) {
+        if (p.direction != Direction::Input || !looksLikeClockPinName(p.name)) continue;
+        ImVec2 world  = sv.portWorldPos(inst, p);
+        float  notchH = std::min(inst.h * 0.3f, 10.0f);
+        ImVec2 top  = sv.worldToScreen(ImVec2(inst.x,               world.y - notchH * 0.5f), canvasPos, canvasSize);
+        ImVec2 bot  = sv.worldToScreen(ImVec2(inst.x,               world.y + notchH * 0.5f), canvasPos, canvasSize);
+        ImVec2 apex = sv.worldToScreen(ImVec2(inst.x + notchH * 0.6f, world.y),               canvasPos, canvasSize);
+        dl->AddLine(top, apex, IM_COL32(0, 0, 0, 200), 1.5f);
+        dl->AddLine(apex, bot, IM_COL32(0, 0, 0, 200), 1.5f);
+        break; // one clock pin is enough to draw the notch once
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gate dispatcher — add new PrimitiveType values here as the library grows
 // ---------------------------------------------------------------------------
 // To add a new gate type:
 //   1. Write a static drawXxxInstance() function above with the same signature
-//   2. Add an else-if branch below matching its modelName string
+//   2. Add a case below matching its PrimitiveType
 // ---------------------------------------------------------------------------
 void SchematicView::drawInstance(ImDrawList* dl, const InstanceShape& inst,
                                  const ImVec2& canvasPos, const ImVec2& canvasSize) const {
-    if (inst.modelName == "assign") {
-        drawAssignInstance(dl, inst, *this, canvasPos, canvasSize);
-    }
-    // else if (inst.modelName == "and2")  { drawAnd2Instance (...); }
-    // else if (inst.modelName == "or2")   { drawOr2Instance  (...); }
-    // else if (inst.modelName == "dff")   { drawDffInstance  (...); }
-    else {
-        drawGenericInstance(dl, inst, *this, canvasPos, canvasSize);
+    switch (inst.primitiveType) {
+        case PrimitiveType::Assign:
+            drawAssignInstance(dl, inst, *this, canvasPos, canvasSize);
+            break;
+        case PrimitiveType::And:
+            drawAndLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/false);
+            break;
+        case PrimitiveType::Nand:
+            drawAndLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/true);
+            break;
+        case PrimitiveType::Or:
+            drawOrLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/false, /*exclusive=*/false);
+            break;
+        case PrimitiveType::Nor:
+            drawOrLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/true, /*exclusive=*/false);
+            break;
+        case PrimitiveType::Xor:
+            drawOrLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/false, /*exclusive=*/true);
+            break;
+        case PrimitiveType::Xnor:
+            drawOrLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/true, /*exclusive=*/true);
+            break;
+        case PrimitiveType::Buf:
+            drawBufLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/false);
+            break;
+        case PrimitiveType::Inv:
+            drawBufLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/true);
+            break;
+        case PrimitiveType::Dff:
+            drawDffInstance(dl, inst, *this, canvasPos, canvasSize);
+            break;
+        default:
+            drawGenericInstance(dl, inst, *this, canvasPos, canvasSize);
+            break;
     }
 }
 

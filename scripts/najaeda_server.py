@@ -49,6 +49,38 @@ def has_visible_primitive_instances(design):
     return any(not instance.getModel().isAssign()
                for instance in design.getPrimitiveInstances())
 
+# Best-effort gate/cell function classification from a design's name --
+# najaeda has no function/timing-arc API to ask directly (see PrimitiveType
+# in Types.h). Checked as a case-insensitive prefix so common Liberty/
+# Verilog naming conventions ("AND2X1", "nand3_1", "DFFX2", ...) match
+# regardless of the vendor-specific drive-strength/version suffix; arity
+# itself is read from the instance's actual port count at render time, not
+# parsed here. LocalSNLProvider.cpp's getPrimitiveType() mirrors this
+# independently, same as the rest of the wire protocol (see CLAUDE.md).
+_PRIMITIVE_TYPE_PREFIXES = (
+    ("XNOR", "xnor"),
+    ("NAND", "nand"),
+    ("NOR",  "nor"),
+    ("XOR",  "xor"),
+    ("AND",  "and"),
+    ("OR",   "or"),
+    ("DFF",  "dff"),
+    ("INV",  "inv"),
+    ("NOT",  "inv"),
+    ("BUF",  "buf"),
+)
+
+def get_primitive_type(model):
+    if model is None:
+        return "unknown"
+    if model.isAssign():
+        return "assign"
+    name = model.getName().upper()
+    for prefix, ptype in _PRIMITIVE_TYPE_PREFIXES:
+        if name.startswith(prefix):
+            return ptype
+    return "unknown"
+
 def is_anonymous_constant_net(net):
     # Anonymous scalar constant nets (1'b0/1'b1 tie-offs, e.g. an unconnected
     # input najaeda ties off implicitly) are structural noise, not
@@ -86,6 +118,7 @@ def serialize_model(model, child_id, name, source_loc=None):
         "name": name,
         "child_id": child_id,
         "model_name": model.getName(),
+        "primitive_type": get_primitive_type(model),
         "design_ref": {
             "db_id": model.getDB().getID(),
             "library_id": model.getLibrary().getID(),
@@ -303,6 +336,7 @@ async def handle_connection(websocket):
                             "library_id": inst_model.getLibrary().getID(),
                             "design_id": inst_model.getID(),
                         },
+                        "primitive_type": get_primitive_type(inst_model),
                         "has_instances": has_instances,
                         "source_loc": get_source_loc(instTerm.getInstance())
                     })

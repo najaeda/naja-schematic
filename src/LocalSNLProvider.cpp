@@ -66,6 +66,43 @@ static std::string instanceName(const SNLInstance* i) {
   return i->getString();
 }
 
+// Best-effort gate/cell function classification from a design's name (naja
+// has no function/timing-arc API to ask directly -- see PrimitiveType in
+// Types.h). Checked as a case-insensitive prefix so common Liberty/Verilog
+// naming conventions ("AND2X1", "nand3_1", "DFFX2", ...) match regardless of
+// the vendor-specific drive-strength/version suffix; arity itself is read
+// from the instance's actual port count at render time, not parsed here.
+// najaeda_server.py's get_primitive_type() mirrors this independently, same
+// as the rest of the wire protocol (see CLAUDE.md).
+static PrimitiveType getPrimitiveType(const SNLDesign* model) {
+  if (!model) return PrimitiveType::Unknown;
+  if (NLDB0::isAssign(model)) return PrimitiveType::Assign;
+
+  std::string name = designName(model);
+  for (auto& c : name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+
+  static const std::pair<const char*, PrimitiveType> kPrefixes[] = {
+    {"XNOR", PrimitiveType::Xnor},
+    {"NAND", PrimitiveType::Nand},
+    {"NOR",  PrimitiveType::Nor},
+    {"XOR",  PrimitiveType::Xor},
+    {"AND",  PrimitiveType::And},
+    {"OR",   PrimitiveType::Or},
+    {"DFF",  PrimitiveType::Dff},
+    {"INV",  PrimitiveType::Inv},
+    {"NOT",  PrimitiveType::Inv},
+    {"BUF",  PrimitiveType::Buf},
+  };
+  for (const auto& [prefix, type] : kPrefixes) {
+    if (name.rfind(prefix, 0) == 0) return type;
+  }
+  return PrimitiveType::Unknown;
+}
+
+static PrimitiveType getPrimitiveType(const SNLInstance* instance) {
+  return instance ? getPrimitiveType(instance->getModel()) : PrimitiveType::Unknown;
+}
+
 static bool hasVisiblePrimitiveInstances(const SNLDesign* d) {
   for (auto* inst : d->getPrimitiveInstances()) {
     auto* model = inst->getModel();
@@ -477,9 +514,10 @@ std::string LocalSNLProvider::buildInstancesResponse(
         continue;
       }
       children.push_back({
-        {"name",       instanceName(inst)},
-        {"model_name", model ? designName(model) : ""},
-        {"child_id",   static_cast<unsigned>(inst->getID())},
+        {"name",           instanceName(inst)},
+        {"model_name",     model ? designName(model) : ""},
+        {"primitive_type", toString(getPrimitiveType(model))},
+        {"child_id",       static_cast<unsigned>(inst->getID())},
         {"design_ref", {
           {"db_id",      model ? static_cast<unsigned>(model->getDB()->getID()) : 0u},
           {"library_id", model ? static_cast<unsigned>(model->getLibrary()->getID()) : 0u},
@@ -639,6 +677,7 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
             {"design_id",  static_cast<unsigned>(model->getID())}
           };
         }
+        entry["primitive_type"] = toString(getPrimitiveType(theInst));
         entry["has_instances"] = hasAnySubInstances(theInst->getModel());
         entry["source_loc"]    = sourceLocJson(theInst);
         occs.push_back(std::move(entry));
@@ -685,6 +724,7 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
             {"design_id",  static_cast<unsigned>(model->getID())}
           };
         }
+        entry["primitive_type"] = toString(getPrimitiveType(theInst));
         entry["has_instances"] = hasAnySubInstances(theInst->getModel());
         entry["source_loc"]    = sourceLocJson(theInst);
         occs.push_back(std::move(entry));
@@ -766,9 +806,10 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
     for (auto* inst : model->getNonPrimitiveInstances()) {
       auto* sub = inst->getModel();
       children.push_back({
-        {"name",       instanceName(inst)},
-        {"model_name", sub ? designName(sub) : ""},
-        {"child_id",   static_cast<unsigned>(inst->getID())},
+        {"name",           instanceName(inst)},
+        {"model_name",     sub ? designName(sub) : ""},
+        {"primitive_type", toString(getPrimitiveType(sub))},
+        {"child_id",       static_cast<unsigned>(inst->getID())},
         {"design_ref", {
           {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
           {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},
@@ -784,9 +825,10 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
       auto* sub = inst->getModel();
       if (sub && NLDB0::isAssign(sub)) continue;
       children.push_back({
-        {"name",       instanceName(inst)},
-        {"model_name", sub ? designName(sub) : ""},
-        {"child_id",   static_cast<unsigned>(inst->getID())},
+        {"name",           instanceName(inst)},
+        {"model_name",     sub ? designName(sub) : ""},
+        {"primitive_type", toString(getPrimitiveType(sub))},
+        {"child_id",       static_cast<unsigned>(inst->getID())},
         {"design_ref", {
           {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
           {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},

@@ -40,6 +40,7 @@ struct Item {
     Direction              direction   = Direction::Inout;
     bool                   isTerm      = false;
     DesignRef              designRef{};
+    PrimitiveType          primitiveType = PrimitiveType::Unknown;
     unsigned               termChildId = 0;
     std::optional<int>     termBit;
     std::vector<unsigned>  pathIds;
@@ -102,13 +103,6 @@ static float                          g_layoutNextY = 0.f;
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Extract the leaf segment from a slash-separated instance path.
-// e.g. "top/sub/<assign:0>" → "<assign:0>"
-static std::string leafSegment(const std::string& path) {
-    auto pos = path.rfind('/');
-    return (pos == std::string::npos) ? path : path.substr(pos + 1);
-}
-
 // Strip a trailing bus-bit suffix ("Q[3]" -> "Q") so a pin label can be
 // matched against DiagnosisItem::terminal, which is always the base name.
 static std::string stripBusIndex(const std::string& label) {
@@ -134,17 +128,6 @@ static std::string busLabel(const std::string& base, std::vector<int> bits) {
     return base + " (*" + std::to_string(bits.size()) + ")";
 }
 
-// Derive the gate/cell model name from the leaf instance name.
-// Naja SNL encodes assign statements as "<assign:N>".
-// Additional primitives can be detected here as the library grows.
-static std::string modelNameFromLeaf(const std::string& leaf) {
-    if (leaf.find("assign") != std::string::npos) return "assign";
-    // Add more patterns here:
-    //   if (leaf.find("DFF") != std::string::npos) return "dff";
-    //   if (leaf == "AND2")                        return "and2";
-    return "";  // generic box
-}
-
 static void buildItems(const Equipotential* eq,
                        std::vector<Item>& drivers,
                        std::vector<Item>& receivers) {
@@ -163,6 +146,7 @@ static void buildItems(const Equipotential* eq,
         item.label       = occ.term.getString();
         item.isTerm      = false;
         item.designRef   = occ.designRef;
+        item.primitiveType = occ.primitiveType;
         item.termChildId = occ.term.child_id;
         item.termBit     = occ.term.bit;
         item.pathIds     = occ.pathIds;
@@ -295,7 +279,7 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
         InstanceShape cs;
         cs.id            = nextInstId++;
         cs.name          = parent.name.empty() ? c.name : parent.name + "/" + c.name;
-        cs.modelName     = modelNameFromLeaf(c.name);
+        cs.primitiveType = c.primitiveType;
         cs.w             = kHierChildW;
         cs.h             = kHierChildH;
         cs.color         = IM_COL32(90, 120, 170, 255);
@@ -662,6 +646,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         ImVec2                pos{};
         bool                  initialized = false;
         DesignRef             designRef{};
+        PrimitiveType         primitiveType = PrimitiveType::Unknown;
         bool                  hasInstances = false;
         std::optional<SourceLoc> sourceLoc;
         std::vector<PortSlot> ports;
@@ -693,6 +678,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 if (!mi.initialized) {
                     mi.initialized   = true;
                     mi.designRef     = item.designRef;
+                    mi.primitiveType = item.primitiveType;
                     mi.hasInstances  = item.hasInstances;
                     mi.sourceLoc     = item.sourceLoc;
                     auto pit = g_placedPositions.find(item.key());
@@ -740,7 +726,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         inst.y     = mi.pos.y;
         inst.w     = kInstW;
         inst.name      = key;
-        inst.modelName = modelNameFromLeaf(leafSegment(key));
+        inst.primitiveType = mi.primitiveType;
         inst.color     = IM_COL32(100, 140, 200, 255);
         inst.diagOutline = DiagnosisStore::instanceColor(key);
         g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.sourceLoc };

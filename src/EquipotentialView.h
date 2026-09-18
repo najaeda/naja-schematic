@@ -23,6 +23,7 @@ class EquipotentialView {
       std::string name;
       unsigned    childId = 0;
       DesignRef   designRef{};
+      PrimitiveType primitiveType = PrimitiveType::Unknown;
       bool        hasInstances = false;  // can itself be expanded further
     };
     // One endpoint of an internal net: a bit term on a specific sub-instance
