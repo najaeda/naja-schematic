@@ -2,6 +2,7 @@
 
 #include "LocalSNLProvider.h"
 #include "Console.h"
+#include "Types.h"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -83,7 +84,25 @@ static bool hasAnySubInstances(const SNLDesign* d) {
   return hasVisiblePrimitiveInstances(d);
 }
 
-static std::string termName(const SNLBitTerm* t) {
+// Anonymous scalar constant nets (1'b0/1'b1 tie-offs, e.g. an unconnected
+// input naja ties off implicitly) are structural noise, not user-authored
+// signals -- filtered out of both has_nets and the Nets tree listing, same
+// spirit as hasVisiblePrimitiveInstances() filtering isAssign() primitives.
+// Named or bus constants are left alone: a name means someone authored it,
+// and a bus is shown as a whole even if every bit happens to be tied.
+static bool isAnonymousConstantNet(const SNLNet* n) {
+  return n->isUnnamed() and (n->isConstant0() or n->isConstant1()) and
+         not dynamic_cast<const SNLBusNet*>(n);
+}
+
+static bool hasVisibleNets(const SNLDesign* d) {
+  for (auto* net : d->getNets()) {
+    if (!isAnonymousConstantNet(net)) return true;
+  }
+  return false;
+}
+
+static std::string termName(const SNLTerm* t) {
   // getName() returns the plain base name with no "[bit]" suffix — the
   // client appends that itself from the separate "bit" field, so using
   // getString() here would double the brackets for bus bit terms.
@@ -380,6 +399,15 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
       designId = req["design_ref"].value("design_id",  0u);
     }
     msgCb_(buildTermsResponse(guiId, dbId, libId, designId));
+  } else if (request == "load_nets") {
+    unsigned guiId = req.value("gui_id", 0u);
+    unsigned dbId = 0, libId = 0, designId = 0;
+    if (req.contains("design_ref")) {
+      dbId     = req["design_ref"].value("db_id",      0u);
+      libId    = req["design_ref"].value("library_id", 0u);
+      designId = req["design_ref"].value("design_id",  0u);
+    }
+    msgCb_(buildNetsResponse(guiId, dbId, libId, designId));
   } else if (request == "load_equipotential") {
     msgCb_(buildEquipotentialResponse(req));
   } else if (request == "expand_instance_terms") {
@@ -388,6 +416,8 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
     msgCb_(buildInstanceInternalsResponse(req));
   } else if (request == "load_source") {
     msgCb_(buildSourceResponse(req));
+  } else if (request == "get_properties") {
+    msgCb_(buildPropertiesResponse(req));
   } else {
     Console::Error("LocalSNLProvider: unknown request: " + request);
   }
@@ -404,7 +434,8 @@ std::string LocalSNLProvider::buildRootResponse() const {
     root = {
       {"name", db_ ? "(failed to find top design)" : "(no netlist — use File > Open)"},
       {"design_ref", {{"db_id", 0}, {"library_id", 0}, {"design_id", 0}}},
-      {"has_terms", false}, {"has_primitives", false}, {"has_instances", false}
+      {"has_terms", false}, {"has_primitives", false}, {"has_instances", false},
+      {"has_nets", false}
     };
   } else {
     root = {
@@ -416,7 +447,8 @@ std::string LocalSNLProvider::buildRootResponse() const {
       }},
       {"has_terms",      !top->getTerms().empty()},
       {"has_primitives", hasVisiblePrimitiveInstances(top)},
-      {"has_instances",  !top->getNonPrimitiveInstances().empty()}
+      {"has_instances",  !top->getNonPrimitiveInstances().empty()},
+      {"has_nets",       hasVisibleNets(top)}
     };
   }
   return json{{"response", "root_response"}, {"root", root}}.dump();
@@ -456,6 +488,7 @@ std::string LocalSNLProvider::buildInstancesResponse(
         {"has_terms",      model && !model->getTerms().empty()},
         {"has_primitives", model && hasVisiblePrimitiveInstances(model)},
         {"has_instances",  model && !model->getNonPrimitiveInstances().empty()},
+        {"has_nets",       model && hasVisibleNets(model)},
         {"source_loc",     sourceLocJson(inst)}
       });
     }
@@ -502,6 +535,44 @@ std::string LocalSNLProvider::buildTermsResponse(
 
   return json{
     {"response", "terms_response"},
+    {"gui_id",   guiId},
+    {"children", children}
+  }.dump();
+}
+
+std::string LocalSNLProvider::buildNetsResponse(
+    unsigned guiId, unsigned dbId, unsigned libId, unsigned designId) const
+{
+  json children = json::array();
+
+  auto* design = findDesign(dbId, libId, designId);
+  if (!design) {
+    Console::Error("buildNetsResponse: design not found db=" + std::to_string(dbId) +
+                   " lib=" + std::to_string(libId) + " design=" + std::to_string(designId));
+    dumpDB();
+  }
+
+  if (design) {
+    for (auto* net : design->getNets()) {
+      if (isAnonymousConstantNet(net)) continue;
+      if (auto* bn = dynamic_cast<SNLBusNet*>(net)) {
+        // Bus net: emit as a single entry with msb/lsb, same convention as
+        // buildTermsResponse's bus terms -- the client appends "[msb:lsb]"
+        // itself and expands individual bits lazily.
+        json n = {
+          {"name", bn->getName().getString()},
+          {"msb",  static_cast<int>(bn->getMSB())},
+          {"lsb",  static_cast<int>(bn->getLSB())}
+        };
+        children.push_back(std::move(n));
+      } else if (auto* bit = dynamic_cast<SNLBitNet*>(net)) {
+        children.push_back({{"name", bit->getName().getString()}});
+      }
+    }
+  }
+
+  return json{
+    {"response", "nets_response"},
     {"gui_id",   guiId},
     {"children", children}
   }.dump();
@@ -795,6 +866,112 @@ std::string LocalSNLProvider::buildSourceResponse(const json& req) const {
     {"line",     line},
     {"found",    found},
     {"text",     text}
+  }.dump();
+}
+
+// General name/value property inspector for whatever object the UI asks
+// about (an instance or a term/pin). The object is identified the same way
+// DiagnosisItem identifies things -- a slash-joined instance-name path, root
+// excluded -- rather than provider-specific numeric child_ids, so it's
+// resolved here by walking instance names down from the top design (see
+// Types.h's splitPathKey() on the client side, and CLAUDE.md's "Path
+// matching convention"). Unknown/unresolvable objects yield an empty
+// properties list rather than an error, matching "no properties" semantics.
+std::string LocalSNLProvider::buildPropertiesResponse(const json& req) const {
+  json properties = json::array();
+  std::string subject;
+
+  auto emit = [&](const std::string& name, const std::string& value) {
+    properties.push_back({{"name", name}, {"value", value}});
+  };
+
+  auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
+  if (topDesign) {
+    std::vector<std::string> path;
+    if (req.contains("path") && req["path"].is_array())
+      for (auto& seg : req["path"]) path.push_back(seg.get<std::string>());
+    std::string kind = req.value("kind", std::string("instance"));
+
+    // Walk the instance-name path from the top design. `design` ends up as
+    // the design that owns any terminal lookup (top design if path is
+    // empty, otherwise the model of the last instance); `instance` is that
+    // last instance itself (nullptr if path is empty).
+    SNLDesign*   design   = topDesign;
+    SNLInstance* instance = nullptr;
+    bool resolved = true;
+    for (const auto& name : path) {
+      instance = design ? design->getInstance(NLName(name)) : nullptr;
+      if (!instance) { resolved = false; break; }
+      design = instance->getModel();
+    }
+
+    if (!resolved) {
+      Console::Error("get_properties: could not resolve instance path");
+    } else if (kind == "term") {
+      std::string terminal = req.value("terminal", std::string(""));
+      for (const auto& seg : path) subject += seg + "/";
+      subject += terminal;
+      if (design && !terminal.empty()) {
+        if (auto* term = design->getTerm(NLName(terminal))) {
+          if (req.contains("bit") && !req["bit"].is_null()) {
+            auto* bus = dynamic_cast<SNLBusTerm*>(term);
+            auto* bit = bus ? bus->getBit(static_cast<NLID::Bit>(req["bit"].get<int>())) : nullptr;
+            if (bit) {
+              emit("Name",      termName(bit));
+              emit("Direction", toString(Direction(snlDirToInt(bit->getDirection()))));
+              emit("Bit",       std::to_string(bit->getBit()));
+            }
+          } else {
+            emit("Name",      termName(term));
+            emit("Direction", toString(Direction(snlDirToInt(term->getDirection()))));
+            if (auto* bus = dynamic_cast<SNLBusTerm*>(term)) {
+              emit("MSB", std::to_string(bus->getMSB()));
+              emit("LSB", std::to_string(bus->getLSB()));
+            }
+          }
+        }
+      }
+    } else if (kind == "net") {
+      std::string netName = req.value("net", std::string(""));
+      for (const auto& seg : path) subject += seg + "/";
+      subject += netName;
+      if (design && !netName.empty()) {
+        if (auto* net = design->getNet(NLName(netName))) {
+          if (req.contains("bit") && !req["bit"].is_null()) {
+            auto* bus = dynamic_cast<SNLBusNet*>(net);
+            auto* bit = bus ? bus->getBit(static_cast<NLID::Bit>(req["bit"].get<int>())) : nullptr;
+            if (bit) {
+              emit("Name", bit->getName().getString());
+              emit("Bit",  std::to_string(bit->getBit()));
+            }
+          } else {
+            emit("Name", net->getName().getString());
+            if (auto* bus = dynamic_cast<SNLBusNet*>(net)) {
+              emit("MSB", std::to_string(bus->getMSB()));
+              emit("LSB", std::to_string(bus->getLSB()));
+            }
+          }
+        }
+      }
+    } else { // "instance"
+      if (path.empty()) {
+        subject = designName(topDesign);
+        emit("Name", subject);
+        emit("Type", "Top Design");
+      } else if (instance) {
+        subject = instanceName(instance);
+        auto* model = instance->getModel();
+        emit("Name",  subject);
+        emit("Model", model ? designName(model) : "");
+        emit("Type",  model && model->isPrimitive() ? "Primitive" : "Hierarchical");
+      }
+    }
+  }
+
+  return json{
+    {"response",   "properties_response"},
+    {"subject",    subject},
+    {"properties", properties}
   }.dump();
 }
 

@@ -24,6 +24,7 @@ TEST(InstanceResponseJson, ParsesWithoutSourceLoc) {
     {"has_primitives", true},
     {"has_instances", false},
     {"has_terms", true},
+    {"has_nets", true},
   };
   InstanceResponseJson r = j.get<InstanceResponseJson>();
   EXPECT_EQ(r.name, "u1");
@@ -32,6 +33,7 @@ TEST(InstanceResponseJson, ParsesWithoutSourceLoc) {
   EXPECT_TRUE(r.has_primitives);
   EXPECT_FALSE(r.has_instances);
   EXPECT_TRUE(r.has_terms);
+  EXPECT_TRUE(r.has_nets);
   EXPECT_FALSE(r.source_loc.has_value());
 }
 
@@ -41,6 +43,7 @@ TEST(InstanceResponseJson, ParsesSourceLocWithDefaults) {
     {"has_primitives", false},
     {"has_instances", false},
     {"has_terms", false},
+    {"has_nets", false},
     {"source_loc", {{"file", "top.sv"}, {"line", 42}}},
   };
   InstanceResponseJson r = j.get<InstanceResponseJson>();
@@ -59,6 +62,7 @@ TEST(InstanceResponseJson, MissingNameDefaultsEmpty) {
     {"has_primitives", false},
     {"has_instances", false},
     {"has_terms", false},
+    {"has_nets", false},
   };
   InstanceResponseJson r = j.get<InstanceResponseJson>();
   EXPECT_EQ(r.name, "");
@@ -75,6 +79,7 @@ TEST(InstancesResponseJson, ParsesChildrenArray) {
         {"has_primitives", false},
         {"has_instances", false},
         {"has_terms", false},
+        {"has_nets", false},
       },
     })},
   };
@@ -109,6 +114,30 @@ TEST(TermsResponseJson, ParsesScalarAndBusTerms) {
 
   const auto& bus = r.children[1];
   EXPECT_EQ(bus.direction, Direction::Input);
+  ASSERT_TRUE(bus.msb.has_value());
+  ASSERT_TRUE(bus.lsb.has_value());
+  EXPECT_EQ(*bus.msb, 7);
+  EXPECT_EQ(*bus.lsb, 0);
+}
+
+TEST(NetsResponseJson, ParsesScalarAndBusNets) {
+  json j = {
+    {"gui_id", 1},
+    {"children", json::array({
+      {{"name", "n1"}},
+      {{"name", "NBUS"}, {"msb", 7}, {"lsb", 0}},
+    })},
+  };
+  NetsResponseJson r = j.get<NetsResponseJson>();
+  ASSERT_EQ(r.children.size(), 2u);
+
+  const auto& scalar = r.children[0];
+  EXPECT_EQ(scalar.name, "n1");
+  EXPECT_FALSE(scalar.msb.has_value());
+  EXPECT_FALSE(scalar.lsb.has_value());
+
+  const auto& bus = r.children[1];
+  EXPECT_EQ(bus.name, "NBUS");
   ASSERT_TRUE(bus.msb.has_value());
   ASSERT_TRUE(bus.lsb.has_value());
   EXPECT_EQ(*bus.msb, 7);

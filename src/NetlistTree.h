@@ -29,6 +29,7 @@ class NetlistTree {
       bool hasTerms,
       bool hasPrimitives,
       bool hasInstances,
+      bool hasNets,
       const std::optional<SourceLoc>& sourceLoc = std::nullopt);
 
     NetlistTreeNode* getNode(unsigned id) const;
@@ -67,6 +68,10 @@ class NetlistTreeNode {
       Direction direction,
       std::optional<int> msb,
       std::optional<int> lsb);
+    void createNetNode(
+      const std::string& name,
+      std::optional<int> msb,
+      std::optional<int> lsb);
     void createInstanceNode(
       const std::string& name,
       const std::string& modelName,
@@ -75,6 +80,7 @@ class NetlistTreeNode {
       bool hasTerms,
       bool hasPrimitives,
       bool hasInstances,
+      bool hasNets,
       const std::optional<SourceLoc>& sourceLoc = std::nullopt);
     void createChildren();
     bool hasChildren() const { return children_ != nullptr; }
@@ -94,6 +100,32 @@ class NetlistTreeNode {
     }
     virtual bool isBitTerm() const {
       return false;
+    }
+    // Net-node counterparts of isBitTerm()/isBus() above -- kept as separate
+    // virtuals (rather than reusing isBitTerm()/isBus()) so render()'s
+    // context-menu dispatch can tell a net leaf/bus from a term one: nets
+    // have no direction and offer no "Show Equipotential" action.
+    virtual bool isBitNet() const {
+      return false;
+    }
+    virtual bool isBusNet() const {
+      return false;
+    }
+    // True for a node backed by a real design object suitable for "Show
+    // Properties" (an instance, including the root) -- false for group
+    // nodes ("Terms"/"Primitives"/"Instances"), which aren't objects.
+    virtual bool isInstanceNode() const {
+      return false;
+    }
+    // Base term name (no "[bit]" suffix), for term/bus-bit nodes only --
+    // used to build a get_properties request. Empty for non-term nodes.
+    virtual std::string getTermBaseName() const {
+      return std::string();
+    }
+    // Base net name (no "[bit]" suffix), for net/bus-net-bit nodes only --
+    // used to build a get_properties request. Empty for non-net nodes.
+    virtual std::string getNetBaseName() const {
+      return std::string();
     }
     // True for a whole-bus term node (msb/lsb both set) — offers a
     // "Show Bus Equipotential" action instead of the single-bit one.
@@ -142,6 +174,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
       bool hasTerms,
       bool hasPrimitives,
       bool hasInstances,
+      bool hasNets,
       const std::optional<SourceLoc>& sourceLoc = std::nullopt
     );
     NetlistTreeInstanceNode(
@@ -153,6 +186,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
       bool hasTerms,
       bool hasPrimitives,
       bool hasInstances,
+      bool hasNets,
       const std::optional<SourceLoc>& sourceLoc = std::nullopt
     );
 
@@ -164,7 +198,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual std::string getPathKey() const override;
     virtual unsigned getChildID() const override { return childID_; }
     virtual bool isLeaf() const override {
-      return !(hasTerms_ || hasPrimitives_ || hasInstances_);
+      return !(hasTerms_ || hasPrimitives_ || hasInstances_ || hasNets_);
     }
     virtual NetlistTreeInstanceNode* getInstanceNode() const override {
       return const_cast<NetlistTreeInstanceNode*>(this);
@@ -172,6 +206,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual ImU32 getColor() const override;
     virtual std::vector<const DiagnosisItem*> getDiagnostics() const override;
     virtual std::optional<SourceLoc> getSourceLoc() const override { return sourceLoc_; }
+    virtual bool isInstanceNode() const override { return true; }
   private:
     bool        isRoot_         {false};
     std::string name_           {};
@@ -181,6 +216,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     bool        hasTerms_       {false};
     bool        hasPrimitives_  {false};
     bool        hasInstances_   {false};
+    bool        hasNets_        {false};
     std::optional<SourceLoc> sourceLoc_ {};
 };
 
@@ -188,6 +224,7 @@ class NetlistTreeGroupNode : public NetlistTreeNode {
   public:
     enum class Type {
       Terms,
+      Nets,
       Primitives,
       Instances
     };
@@ -224,6 +261,7 @@ class NetlistTreeTermNode : public NetlistTreeNode {
       return msb_.has_value() && lsb_.has_value();
     }
     virtual unsigned getChildID() const override { return childID_; }
+    virtual std::string getTermBaseName() const override { return name_; }
     bool isTopTerm() const;
     size_t getWidth() const;
     virtual std::vector<int> busBits() const override;
@@ -255,8 +293,62 @@ class NetlistTreeBusTermBitNode : public NetlistTreeNode {
     virtual unsigned getChildID() const override {
       return getParent()->getChildID();
     }
+    virtual std::string getTermBaseName() const override {
+      return getParent()->getTermBaseName();
+    }
     bool isTopTerm() const {
       return getInstanceNode()->isRoot();
+    }
+  private:
+    int bit_;
+};
+
+class NetlistTreeNetNode : public NetlistTreeNode {
+  public:
+    NetlistTreeNetNode(NetlistTreeNode* parent,
+                       const std::string& name,
+                       std::optional<int> msb,
+                       std::optional<int> lsb);
+
+    virtual std::string getLabel() const override;
+    virtual void expand() override;
+    virtual bool isLeaf() const override {
+      return isBitNet();
+    }
+    virtual bool isBitNet() const override {
+      return !(msb_.has_value() && lsb_.has_value());
+    }
+    virtual bool isBusNet() const override {
+      return msb_.has_value() && lsb_.has_value();
+    }
+    virtual std::string getNetBaseName() const override { return name_; }
+    size_t getWidth() const;
+    virtual std::vector<int> busBits() const override;
+  private:
+    std::string         name_;
+    std::optional<int>  msb_;
+    std::optional<int>  lsb_;
+};
+
+class NetlistTreeBusNetBitNode : public NetlistTreeNode {
+  public:
+    NetlistTreeBusNetBitNode(
+      NetlistTreeNetNode* parent,
+      int bit
+    );
+    virtual bool isBitNet() const override { return true; }
+    virtual std::string getLabel() const override;
+    virtual bool isLeaf() const override {
+      return true;
+    }
+    virtual bool isBusBit() const override {
+      return true;
+    }
+    virtual int getBusBit() const override {
+      return bit_;
+    }
+    virtual std::string getNetBaseName() const override {
+      return getParent()->getNetBaseName();
     }
   private:
     int bit_;

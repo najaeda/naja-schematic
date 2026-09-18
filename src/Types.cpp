@@ -45,6 +45,7 @@ void from_json(const json& j, InstanceResponseJson& r) {
   j.at("has_primitives").get_to(r.has_primitives);
   j.at("has_instances").get_to(r.has_instances);
   j.at("has_terms").get_to(r.has_terms);
+  j.at("has_nets").get_to(r.has_nets);
   r.source_loc = parseSourceLoc(j);
 }
 
@@ -87,6 +88,34 @@ void from_json(const json& j, TermsResponseJson& t) {
       }
 
       t.children.push_back(std::move(term));
+    }
+  }
+}
+
+void from_json(const json& j, NetsResponseJson& n) {
+  j.at("gui_id").get_to(n.gui_id);
+
+  if (j.contains("children") && j["children"].is_array()) {
+    for (const auto& child : j["children"]) {
+      NetResponseJson net;
+
+      if (child.contains("name") && !child["name"].is_null()) {
+        net.name = child["name"].get<std::string>();
+      }
+
+      if (child.contains("msb") && !child["msb"].is_null()) {
+        net.msb = child["msb"].get<int>();
+      } else {
+        net.msb = std::nullopt;
+      }
+
+      if (child.contains("lsb") && !child["lsb"].is_null()) {
+        net.lsb = child["lsb"].get<int>();
+      } else {
+        net.lsb = std::nullopt;
+      }
+
+      n.children.push_back(std::move(net));
     }
   }
 }
@@ -182,4 +211,18 @@ void from_json(const json& j, DiagnosisItem& d) {
   d.severity = diagnosisSeverityFromString(j.value("severity", std::string("info")));
   d.message  = j.value("message", std::string(""));
   d.source   = j.value("source", std::string(""));
+}
+
+void from_json(const json& j, PropertyItem& p) {
+  p.name  = j.value("name", std::string(""));
+  p.value = j.value("value", std::string(""));
+}
+
+void from_json(const json& j, PropertiesResponseJson& r) {
+  r.properties.clear();
+  if (j.contains("properties") && j["properties"].is_array()) {
+    for (const auto& raw : j["properties"]) {
+      r.properties.push_back(raw.get<PropertyItem>());
+    }
+  }
 }

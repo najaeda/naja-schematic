@@ -21,6 +21,8 @@ using json = nlohmann::json;
 #include "DiagnosisView.h"
 #include "SourceStore.h"
 #include "SourceView.h"
+#include "PropertiesStore.h"
+#include "PropertiesView.h"
 #include "DroidSansFont.h"
 #include "Version.h"
 
@@ -93,13 +95,14 @@ void setupProvider(AppState& state) {
 
     if (resp == "root_response" || resp == "root_loaded") {
       Console::Log("Root node data received");
-      DiagnosisStore::clear(); // stale diagnoses reference the old design
+      DiagnosisStore::clear();  // stale diagnoses reference the old design
+      PropertiesStore::clear(); // stale properties reference the old design
       const auto& root = j["root"];
       if (root.contains("has_terms") || root.contains("has_primitives") || root.contains("has_instances")) {
         InstanceResponseJson data = root.get<InstanceResponseJson>();
         state.guiData->netlist_->createRootNode(
           data.name, data.design_ref,
-          data.has_terms, data.has_primitives, data.has_instances,
+          data.has_terms, data.has_primitives, data.has_instances, data.has_nets,
           data.source_loc);
       } else {
         DesignRef designRef{};
@@ -108,7 +111,7 @@ void setupProvider(AppState& state) {
         }
         state.guiData->netlist_->createRootNode(
           root.value("name", std::string("<unnamed root>")),
-          designRef, false, false, root.value("has_children", false));
+          designRef, false, false, root.value("has_children", false), false);
       }
     } else if (resp == "instances_response" || resp == "primitives_response" || resp == "children_loaded") {
       unsigned gui_id = 0;
@@ -128,6 +131,7 @@ void setupProvider(AppState& state) {
             item.has_terms     = false;
             item.has_primitives = false;
             item.has_instances  = hasChildren;
+            item.has_nets       = false;
             children.push_back(std::move(item));
           }
         }
@@ -149,7 +153,7 @@ void setupProvider(AppState& state) {
       for (auto& instance : children) {
         parent->createInstanceNode(
           instance.name, instance.model_name, instance.child_id, instance.design_ref,
-          instance.has_terms, instance.has_primitives, instance.has_instances,
+          instance.has_terms, instance.has_primitives, instance.has_instances, instance.has_nets,
           instance.source_loc);
       }
     } else if (resp == "terms_response") {
@@ -167,6 +171,21 @@ void setupProvider(AppState& state) {
       for (auto& term : data.children) {
         parent->createTermNode(term.name, term.child_id,
                                Direction(term.direction), term.msb, term.lsb);
+      }
+    } else if (resp == "nets_response") {
+      NetsResponseJson data = j.get<NetsResponseJson>();
+      auto parent = state.guiData->netlist_->getNode(data.gui_id);
+      if (!parent) {
+        Console::Error("Cannot find node: " + std::to_string(data.gui_id));
+        return;
+      }
+      if (parent->hasChildren()) {
+        Console::Error("internal error: node already has children");
+        return;
+      }
+      parent->createChildren();
+      for (auto& net : data.children) {
+        parent->createNetNode(net.name, net.msb, net.lsb);
       }
     } else if (resp == "equipotential_response") {
       Console::Log("Equipotential data received");
@@ -236,6 +255,12 @@ void setupProvider(AppState& state) {
       } else {
         Console::Error("Failed to load RTL source: " + file);
       }
+    } else if (resp == "properties_response") {
+      PropertiesResponseJson data = j.get<PropertiesResponseJson>();
+      std::string subject = j.value("subject", std::string(""));
+      Console::Log("Properties received: " + std::to_string(data.properties.size()) + " item(s)");
+      PropertiesStore::setProperties(subject, std::move(data.properties));
+      state.focusPropertiesTab = true;
     } else if (resp == "diagnosis_response") {
       std::vector<DiagnosisItem> items;
       if (j.contains("items") && j["items"].is_array()) {
@@ -597,8 +622,14 @@ bool appFrame(AppState& state) {
             SourceView::render();
             ImGui::EndTabItem();
           }
-          state.focusDiagnosisTab = false;
-          state.focusSourceTab    = false;
+          ImGuiTabItemFlags propFlags = state.focusPropertiesTab ? ImGuiTabItemFlags_SetSelected : 0;
+          if (ImGui::BeginTabItem("Properties", nullptr, propFlags)) {
+            PropertiesView::render();
+            ImGui::EndTabItem();
+          }
+          state.focusDiagnosisTab  = false;
+          state.focusSourceTab     = false;
+          state.focusPropertiesTab = false;
           ImGui::EndTabBar();
         }
       }

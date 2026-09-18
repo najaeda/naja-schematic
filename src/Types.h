@@ -36,6 +36,7 @@ struct InstanceResponseJson {
   bool has_primitives;
   bool has_instances;
   bool has_terms;
+  bool has_nets;
   std::optional<SourceLoc> source_loc;
 };
 
@@ -105,6 +106,22 @@ struct TermsResponseJson {
   std::vector<TermResponseJson> children;
 };
 
+// A net has no direction (unlike a term) -- it's just a signal, identified
+// by name/bit rather than by the provider-specific numeric child_id a term
+// carries for building load_equipotential requests (see NetlistTree's
+// NetlistTreeNetNode -- nets don't offer a "Show Equipotential" action).
+struct NetResponseJson {
+  std::string name;
+  std::optional<int> msb;
+  std::optional<int> lsb;
+};
+
+struct NetsResponseJson {
+  bool found;
+  int gui_id;
+  std::vector<NetResponseJson> children;
+};
+
 struct Equipotential {
   bool found;
   std::vector<BitTerm> terms;
@@ -159,6 +176,42 @@ struct DiagnosisItem {
     return out;
   }
 };
+
+//
+// --- Properties overlay types ---
+// A general name/value inspector for whatever object is currently selected
+// (an instance or a term/pin). Unlike diagnosis_response, this is a
+// request/response pair (get_properties -> properties_response), answered by
+// both LocalSNLProvider (native) and najaeda_server.py (WASM/browser) the
+// same way load_terms etc. are. The object is identified the same way
+// DiagnosisItem identifies things: a slash-joined instance-name path (root
+// excluded), not provider-specific numeric ids, so both backends resolve it
+// by walking instance names from the top design.
+//
+
+struct PropertyItem {
+  std::string name;
+  std::string value;
+};
+
+struct PropertiesResponseJson {
+  std::vector<PropertyItem> properties;
+};
+
+// Inverse of DiagnosisItem::pathKey(): splits a slash-joined instance-name
+// path back into per-segment names. "" (root/top-level) yields an empty path.
+inline std::vector<std::string> splitPathKey(const std::string& key) {
+  std::vector<std::string> out;
+  size_t start = 0;
+  while (start <= key.size()) {
+    size_t slash = key.find('/', start);
+    std::string seg = key.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+    if (!seg.empty()) out.push_back(seg);
+    if (slash == std::string::npos) break;
+    start = slash + 1;
+  }
+  return out;
+}
 
 //
 // --- Renderer / UI types (kept separate from the JSON / API types above) ---
@@ -271,5 +324,8 @@ void from_json(const json& j, DesignRef& d);
 void from_json(const json& j, InstanceResponseJson& r);
 void from_json(const json& j, InstancesResponseJson& r);
 void from_json(const json& j, TermsResponseJson& r);
+void from_json(const json& j, NetsResponseJson& r);
 void from_json(const json& j, Equipotential& e);
 void from_json(const json& j, DiagnosisItem& d);
+void from_json(const json& j, PropertyItem& p);
+void from_json(const json& j, PropertiesResponseJson& r);

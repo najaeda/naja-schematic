@@ -79,6 +79,8 @@ set(CORE_SOURCES
   src/DiagnosisView.cpp
   src/SourceStore.cpp
   src/SourceView.cpp
+  src/PropertiesStore.cpp
+  src/PropertiesView.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
 )
@@ -209,6 +211,7 @@ if(NOT EMSCRIPTEN_BUILD)
       src/NetlistTree.cpp
       src/DiagnosisStore.cpp
       src/SourceStore.cpp
+      src/PropertiesStore.cpp
       ${IMGUI_DIR}/imgui.cpp
       ${IMGUI_DIR}/imgui_draw.cpp
       ${IMGUI_DIR}/imgui_tables.cpp

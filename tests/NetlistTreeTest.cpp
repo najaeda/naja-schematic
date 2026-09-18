@@ -14,7 +14,8 @@ TEST(NetlistTree, RootPathKeyIsEmpty) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
   tree.createRootNode("top", someDesign(), /*hasTerms=*/false,
-                       /*hasPrimitives=*/false, /*hasInstances=*/true);
+                       /*hasPrimitives=*/false, /*hasInstances=*/true,
+                       /*hasNets=*/false);
 
   EXPECT_TRUE(tree.getRoot()->isRoot());
   EXPECT_EQ(tree.getRoot()->getPathKey(), "");
@@ -28,18 +29,18 @@ TEST(NetlistTree, RootPathKeyIsEmpty) {
 TEST(NetlistTree, InstancePathKeyViaGetNode) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
-  tree.createRootNode("top", someDesign(), false, false, true);
+  tree.createRootNode("top", someDesign(), false, false, true, false);
   auto* root = tree.getRoot();
 
   root->createChildren();
-  root->createInstanceNode("u1", "MOD_A", 1, someDesign(), false, false, true);
+  root->createInstanceNode("u1", "MOD_A", 1, someDesign(), false, false, true, false);
   // Root's guiID is 0 (first node inserted); u1 is inserted right after.
   auto* u1 = tree.getNode(1);
   ASSERT_NE(u1, nullptr);
   EXPECT_EQ(u1->getPathKey(), "u1");
 
   u1->createChildren();
-  u1->createInstanceNode("u2", "MOD_B", 2, someDesign(), false, false, false);
+  u1->createInstanceNode("u2", "MOD_B", 2, someDesign(), false, false, false, false);
   auto* u2 = tree.getNode(2);
   ASSERT_NE(u2, nullptr);
   EXPECT_EQ(u2->getPathKey(), "u1/u2");
@@ -48,7 +49,7 @@ TEST(NetlistTree, InstancePathKeyViaGetNode) {
 TEST(NetlistTree, TermNodeBusBitsCountDownFromMsb) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
-  tree.createRootNode("top", someDesign(), true, false, false);
+  tree.createRootNode("top", someDesign(), true, false, false, false);
   auto* root = tree.getRoot();
 
   root->createChildren();
@@ -67,7 +68,7 @@ TEST(NetlistTree, TermNodeBusBitsCountDownFromMsb) {
 TEST(NetlistTree, TermNodeBusBitsCountUpWhenLsbAboveMsb) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
-  tree.createRootNode("top", someDesign(), true, false, false);
+  tree.createRootNode("top", someDesign(), true, false, false, false);
   auto* root = tree.getRoot();
 
   root->createChildren();
@@ -82,7 +83,7 @@ TEST(NetlistTree, TermNodeBusBitsCountUpWhenLsbAboveMsb) {
 TEST(NetlistTree, ScalarTermIsBitTermNotBus) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
-  tree.createRootNode("top", someDesign(), true, false, false);
+  tree.createRootNode("top", someDesign(), true, false, false, false);
   auto* root = tree.getRoot();
 
   root->createChildren();
@@ -93,6 +94,41 @@ TEST(NetlistTree, ScalarTermIsBitTermNotBus) {
   EXPECT_TRUE(term->isBitTerm());
   EXPECT_FALSE(term->isBus());
   EXPECT_TRUE(term->busBits().empty());
+}
+
+TEST(NetlistTree, NetNodeBusBitsCountDownFromMsb) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+  tree.createRootNode("top", someDesign(), false, false, false, true);
+  auto* root = tree.getRoot();
+
+  root->createChildren();
+  root->createNetNode("data", /*msb=*/7, /*lsb=*/0);
+  auto* net = tree.getNode(1);
+  ASSERT_NE(net, nullptr);
+
+  EXPECT_TRUE(net->isBusNet());
+  EXPECT_FALSE(net->isBitNet());
+  auto bits = net->busBits();
+  ASSERT_EQ(bits.size(), 8u);
+  EXPECT_EQ(bits.front(), 7);
+  EXPECT_EQ(bits.back(), 0);
+}
+
+TEST(NetlistTree, ScalarNetIsBitNetNotBus) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+  tree.createRootNode("top", someDesign(), false, false, false, true);
+  auto* root = tree.getRoot();
+
+  root->createChildren();
+  root->createNetNode("n1", std::nullopt, std::nullopt);
+  auto* net = tree.getNode(1);
+  ASSERT_NE(net, nullptr);
+
+  EXPECT_TRUE(net->isBitNet());
+  EXPECT_FALSE(net->isBusNet());
+  EXPECT_TRUE(net->busBits().empty());
 }
 
 TEST(NetlistTree, SendLoadEquipotentialFormatsRequestAndFiresCallback) {

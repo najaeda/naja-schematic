@@ -49,6 +49,23 @@ def has_visible_primitive_instances(design):
     return any(not instance.getModel().isAssign()
                for instance in design.getPrimitiveInstances())
 
+def is_anonymous_constant_net(net):
+    # Anonymous scalar constant nets (1'b0/1'b1 tie-offs, e.g. an unconnected
+    # input najaeda ties off implicitly) are structural noise, not
+    # user-authored signals -- filtered out of both has_nets and the Nets
+    # tree listing, same spirit as has_visible_primitive_instances() filtering
+    # isAssign() primitives. Named or bus constants are left alone: a name
+    # means someone authored it, and a bus is shown as a whole even if every
+    # bit happens to be tied.
+    return (not net.getName()
+            and not isinstance(net, naja.SNLBusNet)
+            and (net.isConstant0() or net.isConstant1()))
+
+def has_nets(design):
+    # No hasNets() convenience binding (unlike hasTerms()/hasNonPrimitiveInstances());
+    # short-circuit on the first visible net rather than materializing the whole list.
+    return any(not is_anonymous_constant_net(net) for net in design.getNets())
+
 def get_source_loc(obj):
     # RTL source location for an elaborated object (SNLRTLInfos), populated
     # today only by the SystemVerilog/slang frontend. None means "no link
@@ -77,6 +94,7 @@ def serialize_model(model, child_id, name, source_loc=None):
         "has_terms": model.hasTerms(),
         "has_primitives": has_visible_primitive_instances(model),
         "has_instances": model.hasNonPrimitiveInstances(),
+        "has_nets": has_nets(model),
     }
     if source_loc is not None:
         result["source_loc"] = source_loc
@@ -89,6 +107,31 @@ def direction_to_int(direction):
         return 1
     else:
         return 2
+
+def direction_to_string(direction):
+    # Matches Types.h's toString(Direction) on the C++ side (LocalSNLProvider
+    # uses the same enum ordering via snlDirToInt/Direction).
+    return ["Input", "Output", "Inout"][direction_to_int(direction)]
+
+
+def resolve_instance_path(top, path):
+    # Walk an instance-name path (root excluded) down from the top design,
+    # the same convention DiagnosisItem/get_properties use elsewhere (see
+    # CLAUDE.md's "Path matching convention") rather than provider-specific
+    # numeric ids. Returns (design, instance): the design that owns any
+    # terminal lookup at this point (top if path is empty, else the last
+    # instance's model), and that last instance itself (None if path is
+    # empty). Returns (None, None) if any segment doesn't resolve.
+    design = top
+    instance = None
+    for name in path:
+        if design is None:
+            return None, None
+        instance = design.getInstance(name)
+        if not instance:
+            return None, None
+        design = instance.getModel()
+    return design, instance
 
 
 async def send_error(websocket, response_type, gui_id=0):
@@ -121,7 +164,7 @@ async def handle_connection(websocket):
                         "root": serialize_model(top, 0, top.getName())
                     }))
 
-            elif req_type in {"load_instance", "load_primitives", "load_instances", "load_terms"}:
+            elif req_type in {"load_instance", "load_primitives", "load_instances", "load_terms", "load_nets"}:
                 if not design_ref_message:
                     print("⚠️ Missing design_ref in request")
                     continue
@@ -184,7 +227,22 @@ async def handle_connection(websocket):
                         "gui_id": gui_id,
                         "children": terms
                     }))
-                
+                elif req_type == "load_nets":
+                    nets = []
+                    for net in design.getNets():
+                        if is_anonymous_constant_net(net):
+                            continue
+                        entry = {"name": net.getName()}
+                        if isinstance(net, naja.SNLBusNet):
+                            entry["msb"] = net.getMSB()
+                            entry["lsb"] = net.getLSB()
+                        nets.append(entry)
+                    await websocket.send(json.dumps({
+                        "response": "nets_response",
+                        "gui_id": gui_id,
+                        "children": nets
+                    }))
+
             elif req_type == "load_equipotential":
                 path_ids = request.get("path", [])
                 term_id = request.get("term_id", {})
@@ -379,6 +437,87 @@ async def handle_connection(websocket):
                     "line": line,
                     "found": found,
                     "text": text
+                }))
+
+            elif req_type == "get_properties":
+                kind = request.get("kind", "instance")
+                path = request.get("path", [])
+                properties = []
+                subject = ""
+
+                top = u.getTopDesign()
+                if top is None:
+                    print("⚠️ get_properties: no design loaded")
+                else:
+                    design, instance = resolve_instance_path(top, path)
+                    if path and design is None:
+                        print(f"⚠️ get_properties: could not resolve instance path {path}")
+                    elif kind == "term":
+                        terminal = request.get("terminal", "")
+                        subject = "/".join(path + [terminal]) if path else terminal
+                        if design is not None and terminal:
+                            term = design.getTerm(terminal)
+                            if term is not None:
+                                bit_arg = request.get("bit")
+                                if bit_arg is not None:
+                                    bit = (term.getBusTermBit(bit_arg)
+                                           if isinstance(term, naja.SNLBusTerm) else None)
+                                    if bit is not None:
+                                        properties = [
+                                            {"name": "Name", "value": bit.getName()},
+                                            {"name": "Direction", "value": direction_to_string(bit.getDirection())},
+                                            {"name": "Bit", "value": str(bit.getBit())},
+                                        ]
+                                else:
+                                    properties = [
+                                        {"name": "Name", "value": term.getName()},
+                                        {"name": "Direction", "value": direction_to_string(term.getDirection())},
+                                    ]
+                                    if isinstance(term, naja.SNLBusTerm):
+                                        properties.append({"name": "MSB", "value": str(term.getMSB())})
+                                        properties.append({"name": "LSB", "value": str(term.getLSB())})
+                    elif kind == "net":
+                        net_name = request.get("net", "")
+                        subject = "/".join(path + [net_name]) if path else net_name
+                        if design is not None and net_name:
+                            net = design.getNet(net_name)
+                            if net is not None:
+                                bit_arg = request.get("bit")
+                                if bit_arg is not None:
+                                    bit = (net.getBit(bit_arg)
+                                           if isinstance(net, naja.SNLBusNet) else None)
+                                    if bit is not None:
+                                        properties = [
+                                            {"name": "Name", "value": bit.getName()},
+                                            {"name": "Bit", "value": str(bit.getBit())},
+                                        ]
+                                else:
+                                    properties = [
+                                        {"name": "Name", "value": net.getName()},
+                                    ]
+                                    if isinstance(net, naja.SNLBusNet):
+                                        properties.append({"name": "MSB", "value": str(net.getMSB())})
+                                        properties.append({"name": "LSB", "value": str(net.getLSB())})
+                    else:  # "instance"
+                        if not path:
+                            subject = top.getName()
+                            properties = [
+                                {"name": "Name", "value": subject},
+                                {"name": "Type", "value": "Top Design"},
+                            ]
+                        elif instance is not None:
+                            subject = instance.getName()
+                            model = instance.getModel()
+                            properties = [
+                                {"name": "Name", "value": subject},
+                                {"name": "Model", "value": model.getName() if model else ""},
+                                {"name": "Type", "value": "Primitive" if model and model.isPrimitive() else "Hierarchical"},
+                            ]
+
+                await websocket.send(json.dumps({
+                    "response": "properties_response",
+                    "subject": subject,
+                    "properties": properties
                 }))
 
             else:

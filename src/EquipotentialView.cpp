@@ -487,19 +487,17 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     if (g_pendingFit) { g_schematic.requestFit(true); g_pendingFit = false; }
 
     if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-        // Right-clicking an instance box with a known RTL source location
-        // opens a per-instance menu instead of the canvas-level one below.
-        // Reverse scan: a nested child's rect sits inside its parent's, so
-        // the innermost box under the cursor is whichever was appended last.
+        // Right-clicking a known instance box opens a per-instance menu
+        // instead of the canvas-level one below. Reverse scan: a nested
+        // child's rect sits inside its parent's, so the innermost box under
+        // the cursor is whichever was appended last.
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
         g_ctxInstanceId = -1;
         for (auto rit = g_schematic.instances.rbegin(); rit != g_schematic.instances.rend(); ++rit) {
             if (rit->w <= 0.f || rit->h <= 0.f) continue;
             if (wp.x < rit->x || wp.x > rit->x + rit->w) continue;
             if (wp.y < rit->y || wp.y > rit->y + rit->h) continue;
-            auto it = g_occInfoByShapeId.find(rit->id);
-            if (it != g_occInfoByShapeId.end() && it->second.sourceLoc.has_value())
-                g_ctxInstanceId = rit->id;
+            if (g_occInfoByShapeId.count(rit->id)) g_ctxInstanceId = rit->id;
             break;
         }
         ImGui::OpenPopup("##ctx");
@@ -507,13 +505,22 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     if (ImGui::BeginPopup("##ctx")) {
         auto occIt = g_ctxInstanceId >= 0 ? g_occInfoByShapeId.find(g_ctxInstanceId)
                                           : g_occInfoByShapeId.end();
-        if (occIt != g_occInfoByShapeId.end() && occIt->second.sourceLoc.has_value()) {
-            if (ImGui::MenuItem("Show RTL Source") && g_provider) {
-                const auto& loc = *occIt->second.sourceLoc;
+        if (occIt != g_occInfoByShapeId.end()) {
+            if (occIt->second.sourceLoc.has_value()) {
+                if (ImGui::MenuItem("Show RTL Source") && g_provider) {
+                    const auto& loc = *occIt->second.sourceLoc;
+                    json req;
+                    req["request"] = "load_source";
+                    req["file"]    = loc.file;
+                    req["line"]    = loc.line;
+                    g_provider->send(req.dump());
+                }
+            }
+            if (ImGui::MenuItem("Show Properties") && g_provider) {
                 json req;
-                req["request"] = "load_source";
-                req["file"]    = loc.file;
-                req["line"]    = loc.line;
+                req["request"] = "get_properties";
+                req["kind"]    = "instance";
+                req["path"]    = splitPathKey(occIt->second.pathKey);
                 g_provider->send(req.dump());
             }
         } else {

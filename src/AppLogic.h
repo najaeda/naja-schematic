@@ -15,10 +15,12 @@ struct AppState {
   INetlistProvider* provider  {nullptr};
   bool              connected {false};
   // One-shot flags: set by the message handler when a source_response /
-  // diagnosis_response arrives, consumed (and cleared) by appFrame() to
-  // auto-select the matching bottom-panel tab for that one frame.
-  bool              focusSourceTab    {false};
-  bool              focusDiagnosisTab {false};
+  // diagnosis_response / properties_response arrives, consumed (and
+  // cleared) by appFrame() to auto-select the matching bottom-panel tab for
+  // that one frame.
+  bool              focusSourceTab     {false};
+  bool              focusDiagnosisTab  {false};
+  bool              focusPropertiesTab {false};
 };
 
 // Wire all provider callbacks (on_open, on_message, on_close, on_error)

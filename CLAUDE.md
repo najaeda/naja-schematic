@@ -162,8 +162,9 @@ wrapper since the underlying socket connects in its constructor.
 - `setupProvider(AppState&)` wires all provider callbacks and calls
   `provider->start()`. All response-message dispatch (`root_response`,
   `instances_response`/`primitives_response`/`children_loaded`,
-  `terms_response`, `equipotential_response`, `expanded_instance_terms`,
-  `error`, ...) lives here, driven by the `"response"` field of incoming JSON —
+  `terms_response`, `nets_response`, `equipotential_response`,
+  `expanded_instance_terms`, `error`, ...) lives here, driven by the
+  `"response"` field of incoming JSON —
   this is the one place to look when tracing how a server/provider reply turns
   into UI state.
 - `appFrame(AppState&)` runs one ImGui frame (poll events, build UI, render)
@@ -172,11 +173,31 @@ wrapper since the underlying socket connects in its constructor.
 ### Wire protocol
 
 Requests/responses are JSON with a `"request"`/`"response"` type field (e.g.
-`load_root`, `load_instance`, `load_primitives`, `load_terms`,
+`load_root`, `load_instance`, `load_primitives`, `load_terms`, `load_nets`,
 `load_equipotential` → `*_response`). Both `LocalSNLProvider` (native,
 `buildRootResponse()`/`buildInstancesResponse()`/etc.) and
 `najaeda_server.py` (WASM/browser) must independently implement this same
 protocol — when changing one side, check the other.
+
+`load_nets`/`nets_response` mirrors `load_terms`/`terms_response` exactly
+(same `gui_id`/`design_ref` request shape, same bus-vs-scalar `msb`/`lsb`
+response shape, lazily populating a `NetlistTreeGroupNode::Type::Nets` group
+next to `Terms` under an instance node) with one deliberate asymmetry: a net
+entry carries no `child_id` and offers no "Show Equipotential" action — a
+net has no direction, and get_properties identifies it by name (`"net"`
+field) rather than by the provider-specific numeric id a term's
+`load_equipotential` request needs. See `NetlistTreeNetNode`/
+`NetlistTreeBusNetBitNode` in `NetlistTree.h/.cpp`.
+
+Both `nets_response` and the `has_nets` flag filter out anonymous scalar
+constant nets (unnamed 1'b0/1'b1 tie-offs, e.g. naja's implicit tie-off of
+an unconnected input) — structural noise, not user-authored signals — via
+`isAnonymousConstantNet()`/`hasVisibleNets()` (`LocalSNLProvider.cpp`) and
+`is_anonymous_constant_net()`/`has_nets()` (`najaeda_server.py`), the same
+spirit as `hasVisiblePrimitiveInstances()` filtering `isAssign()`
+primitives. A *named* or *bus* constant is still shown — the filter is
+deliberately narrow (unnamed **and** scalar **and** constant 0/1) so it
+only hides the implicit tie-offs, not anything a designer wrote by hand.
 
 `diagnosis_response` is different: it's a **server push**, not a reply to a
 request (a diagnosis run finishes on its own schedule), and it *annotates*
@@ -204,10 +225,48 @@ all, so it gets diagnosis data via **File > Load Diagnosis JSON...**
 (reads a `{"items": [...]}` file or a bare array through the same
 `DiagnosisItem` parser) instead.
 
+`get_properties`/`properties_response` is a general name/value inspector for
+whatever object the UI asks about — an instance (including the top design
+itself), a term/pin, or a net — answered by both `LocalSNLProvider`
+(`buildPropertiesResponse()`) and `najaeda_server.py` the same request/
+response way as `load_terms` etc. (unlike `diagnosis_response`, it's not a
+push). The object is identified the same way `DiagnosisItem` identifies
+things — a slash-joined instance-name path, root excluded — rather than
+provider-specific numeric `child_id`s, so both backends resolve it by
+walking instance names down from the top design:
+
+```json
+// request
+{
+  "request": "get_properties",
+  "kind": "instance",        // "instance" | "term" | "net"
+  "path": ["u1", "u2"],      // instance-name path; "instance": path to the object itself ([] = top design);
+                              // "term"/"net": path to the *containing* instance ([] = a top-level port/design net)
+  "terminal": "Q",           // "term" only: pin/port base name, no bus-bit suffix
+  "net": "internal_bus",     // "net" only: net base name, no "[bit]" suffix
+  "bit": 3                   // "term"/"net" only, optional: a specific bus bit
+}
+// response
+{
+  "response": "properties_response",
+  "subject": "u1/u2",        // human-readable label for the object, shown as a heading
+  "properties": [ {"name": "Name", "value": "u2"}, {"name": "Model", "value": "AND2"}, ... ]
+}
+```
+An unresolvable path or unknown terminal/net yields an empty `properties`
+list (not an error) — same "no properties" semantics as an object that
+legitimately has none. Reachable from the tree (right-click an instance,
+term/bus-bit row, or net/bus-net-bit row → "Show Properties") and from the
+schematic (right-click an instance box); see `NetlistTree.cpp`'s render()
+and `EquipotentialView.cpp`'s canvas context menu. Nets have no direction,
+so unlike a term's properties there's no "Direction" entry, and nets don't
+offer a schematic-side "Show Properties" entry point (only terms/instances
+appear as boxes/pins there).
+
 ### Core modules (`src/`)
 
-- **`NetlistTree`** — the design hierarchy tree (instances, terms, bus bits),
-  lazily populated by provider requests as nodes are expanded.
+- **`NetlistTree`** — the design hierarchy tree (instances, terms, nets, bus
+  bits), lazily populated by provider requests as nodes are expanded.
 - **`GUIData`** — top-level UI state container (the netlist tree plus the list
   of currently-displayed `Equipotential`s).
 - **`SchematicView`** / **`EquipotentialView`** — the two main render panels;
@@ -227,6 +286,12 @@ all, so it gets diagnosis data via **File > Load Diagnosis JSON...**
   `root_response`/`root_loaded` (stale diagnoses reference the old design).
 - **`DiagnosisView`** — renders the flat diagnostics list into the
   bottom-left panel in `AppLogic.cpp`.
+- **`PropertiesStore`** — global static store (same pattern as
+  `SourceStore`/`DiagnosisStore`) for the name/value list from the most
+  recent `properties_response`. Cleared on every fresh
+  `root_response`/`root_loaded`.
+- **`PropertiesView`** — renders the current `PropertiesStore` contents as a
+  two-column name/value table into the "Properties" bottom-panel tab.
 
 ### Diagnosis overlay
 
@@ -247,6 +312,11 @@ names, root excluded) must match `NetlistTreeInstanceNode::getPathKey()` and
 `EquipotentialView`'s instance-item keys — all three are built the same way,
 from instance *names*, not the provider's numeric `child_id`s (those aren't
 stable inputs for an external tool like kepler-formal to reference).
+`get_properties` reuses this same path/pathKey convention (`splitPathKey()`
+in `Types.h` is the inverse of `pathKey()`) so its request-building code in
+`NetlistTree.cpp`/`EquipotentialView.cpp` and its resolution code in
+`LocalSNLProvider.cpp`/`najaeda_server.py` need no id/name translation layer
+of their own.
 
 ### VSCode integration
 

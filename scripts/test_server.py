@@ -28,7 +28,8 @@ async def handle_connection(websocket):
                         },
                         "has_terms": True,
                         "has_primitives": True,
-                        "has_instances": True
+                        "has_instances": True,
+                        "has_nets": True
                     }
                 }
                 print(f"📤 Sent: {json.dumps(response)}")
@@ -80,7 +81,8 @@ async def handle_connection(websocket):
                             "design_ref": design_ref,
                             "has_terms": True,
                             "has_primitives": False,
-                            "has_instances": False
+                            "has_instances": False,
+                            "has_nets": False
                         },
                         {
                             "name": "U2",
@@ -89,7 +91,8 @@ async def handle_connection(websocket):
                             "design_ref": design_ref,
                             "has_terms": True,
                             "has_primitives": False,
-                            "has_instances": True
+                            "has_instances": True,
+                            "has_nets": True
                         }
                     ]
                 }
@@ -106,6 +109,19 @@ async def handle_connection(websocket):
                         {"name": "A", "child_id": 1, "direction": 0, "msb": None, "lsb": None},
                         {"name": "B", "child_id": 2, "direction": 1, "msb": None, "lsb": None},
                         {"name": "BUS", "child_id": 3, "direction": 2, "msb": 3, "lsb": 0}
+                    ]
+                }
+                print(f"📤 Sent: {json.dumps(response)}")
+                await websocket.send(json.dumps(response))
+            elif request.get("request") == "load_nets":
+                gui_id = request.get("gui_id", 0)
+                print(f"🔍 Load nets for gui_id: {gui_id}")
+                response = {
+                    "response": "nets_response",
+                    "gui_id": gui_id,
+                    "children": [
+                        {"name": "n1", "msb": None, "lsb": None},
+                        {"name": "NBUS", "msb": 3, "lsb": 0}
                     ]
                 }
                 print(f"📤 Sent: {json.dumps(response)}")
