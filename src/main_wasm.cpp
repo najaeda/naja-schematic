@@ -3,6 +3,7 @@
 #ifdef __EMSCRIPTEN__
 
 #include <emscripten.h>
+#include <emscripten/html5.h>
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <imgui.h>
@@ -16,7 +17,25 @@
 
 static AppState g_state;
 
+// The <canvas> is sized by CSS (it fills the browser window / fullscreen, see
+// shell_minimal.html). SDL follows window resizes on its own, but not every
+// canvas size change (e.g. entering element fullscreen), so also track the CSS
+// size here to keep SDL's window -- and thus ImGui's DisplaySize and glViewport
+// -- in step with what is actually on screen.
+static void syncWindowToCanvas() {
+  double cssW = 0, cssH = 0;
+  if (emscripten_get_element_css_size("#canvas", &cssW, &cssH) != EMSCRIPTEN_RESULT_SUCCESS ||
+      cssW < 1 || cssH < 1)
+    return;
+  const int cw = (int)(cssW + 0.5), ch = (int)(cssH + 0.5);
+  int ww = 0, wh = 0;
+  SDL_GetWindowSize(g_state.window, &ww, &wh);
+  if (ww != cw || wh != ch)
+    SDL_SetWindowSize(g_state.window, cw, ch);
+}
+
 static void mainLoop() {
+  syncWindowToCanvas();
   try {
     appFrame(g_state);
   } catch (const std::exception& e) {

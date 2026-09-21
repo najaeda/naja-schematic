@@ -111,6 +111,7 @@ if(EMSCRIPTEN_BUILD)
     "-sFULL_ES3=1"
     "-sASSERTIONS=1"
     "-sEXIT_RUNTIME=0"
+    "-sEXPORTED_RUNTIME_METHODS=['requestFullscreen']"
     "-sWASM=1"
     "--shell-file=${CMAKE_SOURCE_DIR}/src/shell_minimal.html"
     "-lwebsocket.js"
